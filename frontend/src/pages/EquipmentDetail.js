@@ -2,9 +2,9 @@
  * Live page for a single equipment: all sensors, one chart per sensor,
  * plus inline AI predictions (anomaly + RUL) and recent alarms.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Equipment as EqApi, Predictions, Alarms } from '../services/api';
+import { Equipment as EqApi, Predictions, Alarms, Sensors } from '../services/api';
 import { useLiveFeed } from '../services/websocket';
 import RealTimeChart from '../components/Dashboard/RealTimeChart';
 import AnomalyDisplay from '../components/ML/AnomalyDisplay';
@@ -24,8 +24,9 @@ export default function EquipmentDetail() {
   const [rul,       setRul]       = useState(null);
   const [busy,      setBusy]      = useState(false);
   const [error,     setError]     = useState('');
+  const histLoadedRef = useRef(false);
 
-  const { readings, connected } = useLiveFeed({ equipmentId: eqId });
+  const { readings, connected, seedHistorical } = useLiveFeed({ equipmentId: eqId });
 
   useEffect(() => {
     let active = true;
@@ -41,6 +42,27 @@ export default function EquipmentDetail() {
     }).catch(e => setError(e.response?.data?.message || 'Failed to load'));
     return () => { active = false; };
   }, [eqId]);
+
+  // Pre-populate charts with the last 5 minutes of historical readings.
+  useEffect(() => {
+    if (!equipment?.sensors?.length || histLoadedRef.current) return;
+    histLoadedRef.current = true;
+
+    const from = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    Promise.all(
+      equipment.sensors.map(s =>
+        Sensors.readings(s.id, { from, bucket: 'raw', limit: 500 })
+          .then(res => ({ id: s.id, points: res.points || [] }))
+          .catch(() => ({ id: s.id, points: [] }))
+      )
+    ).then(results => {
+      const hist = {};
+      for (const { id: sid, points } of results) {
+        hist[sid] = points.map(p => ({ ts: p.ts, value: Number(p.value) }));
+      }
+      seedHistorical(hist);
+    });
+  }, [equipment, seedHistorical]);
 
   const runPredictions = async () => {
     if (!equipment?.sensors?.length) return;

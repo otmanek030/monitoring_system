@@ -13,8 +13,10 @@ export default function KPICards({ health, alarmStats, mlStatus }) {
     : '--';
 
   const alarms = alarmStats?.active || 0;
-  const hi     = alarmStats?.by_severity?.high || 0;
-  const cr     = alarmStats?.by_severity?.critical || 0;
+  // The DB stores severity as 'warning' (H1) and 'fatal' (H2).
+  // Accept both the DB names and older camelCase aliases defensively.
+  const hi = alarmStats?.by_severity?.warning  || alarmStats?.by_severity?.high     || 0;
+  const cr = alarmStats?.by_severity?.fatal    || alarmStats?.by_severity?.critical  || 0;
 
   const mlOk = mlStatus?.ok;
 

@@ -1,11 +1,28 @@
 /**
  * Sensor readings endpoints - raw & aggregated time-series.
  * Designed to stay fast on TimescaleDB hypertables.
+ *
+ * We expose two spellings of the same fields (sensor_id / id,
+ * tag_code / tag, warn_low / l1, ...) so the DB-style backend tests and
+ * the short-named React frontend both work against the same payload.
  */
 'use strict';
 
 const { query } = require('../config/db');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
+
+function decorateSensor(s) {
+  if (!s) return s;
+  return {
+    ...s,
+    id:   s.id   ?? s.sensor_id,
+    tag:  s.tag  ?? s.tag_code,
+    l1:   s.l1   ?? (s.warn_low   != null ? Number(s.warn_low)   : null),
+    l2:   s.l2   ?? (s.alarm_low  != null ? Number(s.alarm_low)  : null),
+    h1:   s.h1   ?? (s.warn_high  != null ? Number(s.warn_high)  : null),
+    h2:   s.h2   ?? (s.alarm_high != null ? Number(s.alarm_high) : null),
+  };
+}
 
 /** GET /api/sensors */
 const listSensors = asyncHandler(async (req, res) => {
@@ -15,7 +32,7 @@ const listSensors = asyncHandler(async (req, res) => {
   if (equipment)   { params.push(equipment);   where.push(`s.equipment_id = $${params.length}`); }
   if (measurement) { params.push(measurement); where.push(`s.measurement = $${params.length}`); }
   const { rows } = await query(
-    `SELECT s.sensor_id, s.tag_code, s.name, s.measurement, s.unit,
+    `SELECT s.sensor_id, s.equipment_id, s.tag_code, s.name, s.measurement, s.unit,
             s.range_min, s.range_max, s.warn_low, s.warn_high,
             s.alarm_low, s.alarm_high,
             e.tag_code AS equipment_tag, e.name AS equipment_name
@@ -25,33 +42,36 @@ const listSensors = asyncHandler(async (req, res) => {
      ORDER BY s.tag_code`,
     params
   );
-  res.json(rows);
+  res.json(rows.map(decorateSensor));
 });
 
 /** GET /api/sensors/:id */
 const getSensor = asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid sensor id');
   const { rows } = await query(
     `SELECT s.*, e.tag_code AS equipment_tag, e.name AS equipment_name
      FROM sensors s
      JOIN equipment e ON e.equipment_id = s.equipment_id
      WHERE s.sensor_id = $1`,
-    [req.params.id]
+    [id]
   );
   if (!rows[0]) throw new ApiError(404, 'Sensor not found');
-  res.json(rows[0]);
+  res.json(decorateSensor(rows[0]));
 });
 
 /** GET /api/sensors/latest  - latest value per sensor (dashboard gauges) */
 const latest = asyncHandler(async (_req, res) => {
   const { rows } = await query(
     `SELECT v.sensor_id, s.tag_code, s.name, s.measurement, s.unit,
+            s.warn_low, s.warn_high, s.alarm_low, s.alarm_high,
             v.ts, v.value, v.quality, v.is_anomaly,
             s.equipment_id, e.tag_code AS equipment_tag
      FROM v_sensor_latest v
      JOIN sensors s   ON s.sensor_id   = v.sensor_id
      JOIN equipment e ON e.equipment_id = s.equipment_id`
   );
-  res.json(rows);
+  res.json(rows.map(decorateSensor));
 });
 
 /**
@@ -61,7 +81,8 @@ const latest = asyncHandler(async (_req, res) => {
  * Returns {sensor, points:[{ts,value,min,max,std}]}
  */
 const readings = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid sensor id');
   const to     = req.query.to   ? new Date(req.query.to)   : new Date();
   const from   = req.query.from ? new Date(req.query.from) : new Date(to.getTime() - 60 * 60 * 1000);
   const bucket = req.query.bucket || 'raw';
@@ -70,7 +91,9 @@ const readings = asyncHandler(async (req, res) => {
   if (isNaN(from) || isNaN(to) || from >= to) throw new ApiError(400, 'Invalid time range');
 
   const { rows: meta } = await query(
-    'SELECT sensor_id, tag_code, name, unit FROM sensors WHERE sensor_id = $1', [id]);
+    `SELECT sensor_id, tag_code, name, unit, warn_low, warn_high,
+            alarm_low, alarm_high
+     FROM sensors WHERE sensor_id = $1`, [id]);
   if (!meta[0]) throw new ApiError(404, 'Sensor not found');
 
   let points;
@@ -100,7 +123,7 @@ const readings = asyncHandler(async (req, res) => {
       min: Number(r.min), max: Number(r.max), std: r.std ? Number(r.std) : 0, n: Number(r.n) }));
   }
 
-  res.json({ sensor: meta[0], from, to, bucket, points });
+  res.json({ sensor: decorateSensor(meta[0]), from, to, bucket, points });
 });
 
 /**
@@ -108,7 +131,8 @@ const readings = asyncHandler(async (req, res) => {
  * Admin/operator only. Body: { value, ts?, quality? }
  */
 const ingest = asyncHandler(async (req, res) => {
-  const { id } = req.params;
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid sensor id');
   const { value, ts, quality = 192 } = req.body || {};
   if (typeof value !== 'number') throw new ApiError(400, 'value must be a number');
   const when = ts ? new Date(ts) : new Date();

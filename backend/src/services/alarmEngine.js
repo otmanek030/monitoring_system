@@ -53,6 +53,11 @@ async function evaluate(sensor, value, ts) {
   // Raise new alarm (unless we just returned to NORMAL)
   if (now.state !== 'NORMAL') {
     try {
+      // NOTE: $6 is the numeric trigger value used in both:
+      //   - the human-readable message  (cast to text)
+      //   - the trigger_value column    (explicit ::double precision)
+      // Without the cast, pg infers $6 as text (from the `||` concat) and
+      // then refuses to stuff it into a DOUBLE PRECISION column.
       const { rows } = await query(
         `INSERT INTO alarms
            (ts, alarm_def_id, equipment_id, sensor_id,
@@ -62,12 +67,13 @@ async function evaluate(sensor, value, ts) {
                   WHERE sensor_id = $2 AND code = $3 LIMIT 1),
                 s.equipment_id, s.sensor_id,
                 $4, $5,
-                s.name || ' ' || $3 || ' (' || $6 || ' ' || s.unit || ')',
-                $6, $7, $8
+                s.name || ' ' || $3 || ' (' ||
+                  to_char($6::double precision, 'FM999999990.0###') || ' ' || s.unit || ')',
+                $6::double precision, $7, $8
          FROM sensors s WHERE s.sensor_id = $2
          RETURNING alarm_id, ts, equipment_id, sensor_id, severity, message, trigger_value`,
         [ts, sensor.sensor_id, now.code, now.sev,
-         now.sev === 'fatal' ? 1 : 3, value, prev.state, now.state]
+         now.sev === 'fatal' ? 1 : 3, Number(value), prev.state, now.state]
       );
       if (rows[0]) {
         events.push({ type: 'new', alarm: rows[0] });

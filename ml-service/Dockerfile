@@ -12,9 +12,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc g++ python3-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps into a dedicated prefix so they copy cleanly
+# Install Python deps into a dedicated prefix so they copy cleanly.
+# --retries + --timeout make pip resilient on slow / flaky connections
+# (xgboost/scipy/pandas wheels are ~50MB each and frequently time out).
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install --no-warn-script-location \
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --prefix=/install --no-warn-script-location \
+        --retries 10 --timeout 120 \
         -r requirements.txt
 
 

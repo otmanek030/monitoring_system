@@ -5,11 +5,15 @@
 import { useAuth } from '../../contexts/AuthContext';
 import { Alarms } from '../../services/api';
 
+// Map DB severity names ('warning', 'fatal') plus legacy aliases to badge styles.
 const pill = (sev) => {
   const colors = {
     low:      { bg: '#2a3a55', fg: '#9fb6d9' },
+    info:     { bg: '#2a3a55', fg: '#9fb6d9' },
+    warning:  { bg: '#4a3a1a', fg: '#ffb04a' },
     medium:   { bg: '#4a3a1a', fg: '#ffb04a' },
     high:     { bg: '#5a2b1a', fg: '#ff8e5c' },
+    fatal:    { bg: '#5a1a20', fg: '#ff5566' },
     critical: { bg: '#5a1a20', fg: '#ff5566' },
   };
   const c = colors[sev] || colors.low;

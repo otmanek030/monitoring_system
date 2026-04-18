@@ -271,19 +271,19 @@ ON CONFLICT (code) DO NOTHING;
 -- bcrypt hash of "phoswatch123" ($2b$10$...)
 INSERT INTO users (username, email, full_name, password_hash, role_id) VALUES
   ('admin',   'admin@phoswatch.local',      'System Administrator',
-   '$2b$10$k2p/y2wE2dkf6mxkGcSz7uUSM1q1t95aHlKydHUiiAb2Wzt0dmQIS',
+   '$2b$10$Yk5iwI3xfE5.AxXbwssuiOehw75wuzkyZKiwcIjV4BgUCPkCPYgo2',
    (SELECT role_id FROM roles WHERE code='admin')),
   ('fahmi',   'fahmi@phoswatch.local',      'FAHMI Abderrahim',
-   '$2b$10$k2p/y2wE2dkf6mxkGcSz7uUSM1q1t95aHlKydHUiiAb2Wzt0dmQIS',
+   '$2b$10$Yk5iwI3xfE5.AxXbwssuiOehw75wuzkyZKiwcIjV4BgUCPkCPYgo2',
    (SELECT role_id FROM roles WHERE code='supervisor')),
   ('othmane', 'othmane@phoswatch.local',    'EL BARNATY Othmane',
-   '$2b$10$k2p/y2wE2dkf6mxkGcSz7uUSM1q1t95aHlKydHUiiAb2Wzt0dmQIS',
+   '$2b$10$Yk5iwI3xfE5.AxXbwssuiOehw75wuzkyZKiwcIjV4BgUCPkCPYgo2',
    (SELECT role_id FROM roles WHERE code='admin')),
   ('tech1',   'tech1@phoswatch.local',      'Technician 1',
-   '$2b$10$k2p/y2wE2dkf6mxkGcSz7uUSM1q1t95aHlKydHUiiAb2Wzt0dmQIS',
+   '$2b$10$Yk5iwI3xfE5.AxXbwssuiOehw75wuzkyZKiwcIjV4BgUCPkCPYgo2',
    (SELECT role_id FROM roles WHERE code='technician')),
   ('op1',     'op1@phoswatch.local',        'Operator 1',
-   '$2b$10$k2p/y2wE2dkf6mxkGcSz7uUSM1q1t95aHlKydHUiiAb2Wzt0dmQIS',
+   '$2b$10$Yk5iwI3xfE5.AxXbwssuiOehw75wuzkyZKiwcIjV4BgUCPkCPYgo2',
    (SELECT role_id FROM roles WHERE code='operator'))
 ON CONFLICT (username) DO NOTHING;
 
