@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # Backend Node.js Service
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: phoswatch-backend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://phoswatch_user:phoswatch_pass@database:5432/phoswatch_db
+      - ML_SERVICE_URL=http://ml-service:8000
+      - JWT_SECRET=phoswatch_super_secret_key_2026
+      - CORS_ORIGIN=http://localhost
+    depends_on:
+      - database
+      - ml-service
+    networks:
+      - phoswatch-network
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # ML Service (Python/FastAPI)
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: phoswatch-ml
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://phoswatch_user:phoswatch_pass@database:5432/phoswatch_db
+      - MODEL_PATH=/app/models
+      - LOG_LEVEL=INFO
+    depends_on:
+      - database
+    networks:
+      - phoswatch-network
+    volumes:
+      - ./ml-service:/app
+      - ml_models:/app/models
+    restart: unless-stopped
+
+  # Frontend React Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: phoswatch-frontend
+    ports:
+      - "80:80"
+      - "443:443"  # For HTTPS if needed
+    environment:
+      - REACT_APP_API_URL=http://localhost:3000
+      - REACT_APP_WS_URL=ws://localhost:3000
+      - REACT_APP_ML_URL=http://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - phoswatch-network
+    restart: unless-stopped
+
+  # PostgreSQL + TimescaleDB Database
+  database:
+    image: timescale/timescaledb:latest-pg15
+    container_name: phoswatch-database
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=phoswatch_user
+      - POSTGRES_PASSWORD=phoswatch_pass
+      - POSTGRES_DB=phoswatch_db
+      - TIMESCALEDB_TELEMETRY=off
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+    networks:
+      - phoswatch-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phoswatch_user -d phoswatch_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: pgAdmin for database management (uncomment if needed)
+  # pgadmin:
+  #   image: dpage/pgadmin4
+  #   container_name: phoswatch-pgadmin
+  #   environment:
+  #     - PGADMIN_DEFAULT_EMAIL=admin@phoswatch.com
+  #     - PGADMIN_DEFAULT_PASSWORD=admin123
+  #   ports:
+  #     - "5050:80"
+  #   depends_on:
+  #     - database
+  #   networks:
+  #     - phoswatch-network
+
+networks:
+  phoswatch-network:
+    driver: bridge
+    name: phoswatch-network
+
+volumes:
+  postgres_data:
+    driver: local
+    name: phoswatch_postgres_data
+  ml_models:
+    driver: local
+    name: phoswatch_ml_models
