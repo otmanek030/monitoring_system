@@ -51,6 +51,9 @@ export const Sensors = {
   get:      (id)     => api.get(`/sensors/${id}`).then(r => r.data),
   latest:   ()       => api.get('/sensors/latest').then(r => r.data),
   readings: (id, params) => api.get(`/sensors/${id}/readings`, { params }).then(r => r.data),
+  /** Supervisor+ : edit low/high thresholds. */
+  setThresholds: (id, body) =>
+    api.patch(`/sensors/${id}/thresholds`, body).then(r => r.data),
 };
 
 export const Alarms = {
@@ -76,6 +79,17 @@ export const Maintenance = {
   create: (data)     => api.post('/maintenance', data).then(r => r.data),
   update: (id, data) => api.patch(`/maintenance/${id}`, data).then(r => r.data),
   remove: (id)       => api.delete(`/maintenance/${id}`).then(r => r.data),
+  /** Supervisor : assign a work order to a technician (user_id or null). */
+  assign: (id, assigned_to) =>
+    api.patch(`/maintenance/${id}/assign`, { assigned_to }).then(r => r.data),
+};
+
+export const Notes = {
+  list:   (params)   => api.get('/notes', { params }).then(r => r.data),
+  get:    (id)       => api.get(`/notes/${id}`).then(r => r.data),
+  create: (data)     => api.post('/notes', data).then(r => r.data),
+  update: (id, data) => api.patch(`/notes/${id}`, data).then(r => r.data),
+  remove: (id)       => api.delete(`/notes/${id}`).then(r => r.data),
 };
 
 export const Users = {
@@ -91,10 +105,20 @@ export const Reports = {
   equipmentPdfUrl:  (id, from, to) => `/api/reports/equipment/${id}/pdf?from=${from}&to=${to}`,
   alarmsXlsxUrl:    (from, to)     => `/api/reports/alarms/xlsx?from=${from}&to=${to}`,
   summaryPdfUrl:    (from, to)     => `/api/reports/summary/pdf?from=${from}&to=${to}`,
+  myShiftPdfUrl:    (from, to)     => `/api/reports/my-shift/pdf?from=${from}&to=${to}`,
   /** Report endpoints need the JWT as a header, so we fetch the blob in JS. */
   fetchBlob: async (url) => {
     const r = await api.get(url.replace('/api', ''), { responseType: 'blob' });
     return r.data;
+  },
+  /** Convenience: fetch + auto-download via an invisible <a>. */
+  download: async (url, filename) => {
+    const blob = await Reports.fetchBlob(url);
+    const href = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href; a.download = filename || 'report';
+    document.body.appendChild(a); a.click(); a.remove();
+    window.URL.revokeObjectURL(href);
   },
 };
 

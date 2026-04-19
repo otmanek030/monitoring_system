@@ -7,9 +7,10 @@ const { authRequired, requirePerm } = require('../middleware/auth');
 const router = Router();
 router.use(authRequired);
 
-router.get   ('/',        ctrl.list);
-router.post  ('/',        requirePerm('maintenance','w'), ctrl.create);
-router.patch ('/:id',     requirePerm('maintenance','w'), ctrl.update);
-router.delete('/:id',     requirePerm('maintenance','w'), ctrl.remove);
+router.get   ('/',             ctrl.list);
+router.post  ('/',             requirePerm('maintenance','w'),        ctrl.create);
+router.patch ('/:id/assign',   requirePerm('assign_maintenance','w'), ctrl.assign);
+router.patch ('/:id',          requirePerm('maintenance','w'),        ctrl.update);
+router.delete('/:id',          requirePerm('maintenance','w'),        ctrl.remove);
 
 module.exports = router;

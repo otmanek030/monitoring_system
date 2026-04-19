@@ -1,20 +1,28 @@
 /**
- * Paginated list of all equipment with quick status + health badges.
- * Clicking a row navigates to EquipmentDetail.
+ * Equipment — paginated list with status badges and health bars.
+ * Dark-themed using CSS variable palette.
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Equipment as EqApi } from '../services/api';
 
-const statusPill = (s) => {
+/* Status → badge class mapping */
+const statusClass = (s) => {
   const map = {
-    running:     { bg: '#1c3c2b', fg: '#2cd08c' },
-    idle:        { bg: '#2a3a55', fg: '#9fb6d9' },
-    fault:       { bg: '#5a1a20', fg: '#ff5566' },
-    maintenance: { bg: '#4a3a1a', fg: '#ffb04a' },
-    stopped:     { bg: '#2a2f3b', fg: '#7b8799' },
+    running:     'badge ok',
+    idle:        'badge idle',
+    fault:       'badge bad',
+    maintenance: 'badge warn',
+    stopped:     'badge stopped',
   };
-  return map[s] || map.idle;
+  return map[s] || 'badge idle';
+};
+
+/* Health score → color */
+const healthColor = (v) => {
+  if (v >= 70) return 'var(--g)';
+  if (v >= 40) return 'var(--yellow)';
+  return 'var(--red)';
 };
 
 export default function Equipment() {
@@ -34,50 +42,103 @@ export default function Equipment() {
     (i.name || '').toLowerCase().includes(filter.toLowerCase())
   );
 
+  /* Status summary counts */
+  const counts = items.reduce((acc, i) => {
+    acc[i.status] = (acc[i.status] || 0) + 1;
+    return acc;
+  }, {});
+
   return (
     <div>
+      {/* Page head */}
       <div className="page-head">
-        <h2>Equipment</h2>
-        <input placeholder="Filter by tag or name"
-               value={filter} onChange={(e) => setFilter(e.target.value)}
-               style={{ width: 260 }} />
+        <div>
+          <h2>Equipment</h2>
+          <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 2 }}>
+            {items.length} equipment units ·
+            <span style={{ color: 'var(--g)', marginLeft: 6 }}>{counts.running || 0} running</span>
+            {counts.fault > 0 && <span style={{ color: 'var(--red)', marginLeft: 6 }}>{counts.fault} fault</span>}
+            {counts.maintenance > 0 && <span style={{ color: 'var(--yellow)', marginLeft: 6 }}>{counts.maintenance} maintenance</span>}
+          </div>
+        </div>
+        <input
+          placeholder="Filter by tag or name…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          style={{ width: 240 }}
+        />
       </div>
 
       {error && <div className="error">{error}</div>}
 
-      <div className="card">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Tag</th><th>Name</th><th>Area</th><th>Type</th>
-              <th>Status</th><th>Health</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map(e => (
-              <tr key={e.id}>
-                <td><code>{e.tag}</code></td>
-                <td>{e.name}</td>
-                <td>{e.area_code || '--'}</td>
-                <td className="muted">{e.type_name || '--'}</td>
-                <td>
-                  <span className="badge" style={statusPill(e.status)}>{e.status}</span>
-                </td>
-                <td>
-                  <HealthBar value={Number(e.health_score) || 0} />
-                </td>
-                <td style={{ textAlign: 'right' }}>
-                  <Link className="ghost small" to={`/equipment/${e.id}`}>Open →</Link>
-                </td>
+      <div className="panel">
+        <div className="panel-head">
+          <span className="title">Equipment Registry</span>
+          <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>{visible.length} entries</span>
+          <span className="menu">⋯</span>
+        </div>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Tag</th>
+                <th>Name</th>
+                <th>Area</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Health</th>
+                <th style={{ textAlign: 'right' }}>Detail</th>
               </tr>
-            ))}
-            {!visible.length && (
-              <tr><td colSpan="7" className="muted" style={{ textAlign: 'center', padding: 24 }}>
-                No equipment matches your filter.
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visible.map(e => {
+                const h = Number(e.health_score) || 0;
+                return (
+                  <tr key={e.id}>
+                    <td>
+                      <code style={{ fontSize: 11.5 }}>{e.tag}</code>
+                    </td>
+                    <td style={{ fontWeight: 500 }}>{e.name}</td>
+                    <td style={{ color: 'var(--tm)' }}>{e.area_code || '—'}</td>
+                    <td style={{ color: 'var(--tm)', fontSize: 11.5 }}>{e.type_name || '—'}</td>
+                    <td>
+                      <span className={statusClass(e.status)}>{e.status}</span>
+                    </td>
+                    <td>
+                      <HealthBar value={h} />
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <Link
+                        to={`/equipment/${e.id}`}
+                        className="ghost small"
+                        style={{
+                          display: 'inline-block',
+                          padding: '3px 9px',
+                          borderRadius: 4,
+                          border: '1px solid var(--border-2)',
+                          color: 'var(--g)',
+                          fontSize: 11.5,
+                          textDecoration: 'none',
+                          background: 'transparent',
+                          transition: 'all .12s',
+                        }}
+                      >
+                        Open →
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!visible.length && (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: 'center', padding: 28, color: 'var(--tm)', fontSize: 13 }}>
+                    {filter ? 'No equipment matches your filter.' : '⏳ Loading equipment list…'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -85,13 +146,21 @@ export default function Equipment() {
 
 function HealthBar({ value }) {
   const v = Math.max(0, Math.min(100, value));
-  const c = v >= 70 ? '#2cd08c' : v >= 40 ? '#ffb04a' : '#ff5566';
+  const c = healthColor(v);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div className="meter" style={{ width: 120 }}>
-        <div className="meter-fill" style={{ width: `${v}%`, background: c }} />
+      <div style={{ width: 100, height: 6, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+        <div style={{ width: `${v}%`, height: '100%', background: c, borderRadius: 3, transition: 'width .4s' }} />
       </div>
-      <span style={{ color: c, fontSize: 12 }}>{v.toFixed(0)}</span>
+      <span style={{
+        color: c,
+        fontSize: 11,
+        fontFamily: "'JetBrains Mono', monospace",
+        fontWeight: 600,
+        minWidth: 28,
+      }}>
+        {v.toFixed(0)}
+      </span>
     </div>
   );
 }

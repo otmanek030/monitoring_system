@@ -146,4 +146,45 @@ const ingest = asyncHandler(async (req, res) => {
   res.status(201).json({ ok: true });
 });
 
-module.exports = { listSensors, getSensor, latest, readings, ingest };
+/**
+ * PATCH /api/sensors/:id/thresholds
+ *   body: { warn_low?, warn_high?, alarm_low?, alarm_high? }
+ *   Aliases accepted: l1 -> warn_low, l2 -> alarm_low,
+ *                     h1 -> warn_high, h2 -> alarm_high
+ * Supervisor+ only (route layer enforces `thresholds:w`).
+ */
+const updateThresholds = asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid sensor id');
+
+  const aliased = { ...req.body };
+  if (aliased.l1 !== undefined) aliased.warn_low   = aliased.l1;
+  if (aliased.l2 !== undefined) aliased.alarm_low  = aliased.l2;
+  if (aliased.h1 !== undefined) aliased.warn_high  = aliased.h1;
+  if (aliased.h2 !== undefined) aliased.alarm_high = aliased.h2;
+
+  const fields  = ['warn_low', 'warn_high', 'alarm_low', 'alarm_high'];
+  const updates = [];
+  const params  = [];
+  for (const f of fields) {
+    if (aliased[f] === undefined) continue;
+    const v = aliased[f] === null || aliased[f] === '' ? null : Number(aliased[f]);
+    if (v !== null && !Number.isFinite(v)) throw new ApiError(400, `invalid ${f}`);
+    params.push(v);
+    updates.push(`${f} = $${params.length}`);
+  }
+  if (!updates.length) throw new ApiError(400, 'No thresholds to update');
+  params.push(id);
+
+  const { rows } = await query(
+    `UPDATE sensors SET ${updates.join(', ')}
+     WHERE sensor_id = $${params.length}
+     RETURNING sensor_id, tag_code, name, unit,
+               warn_low, warn_high, alarm_low, alarm_high`,
+    params);
+  if (!rows[0]) throw new ApiError(404, 'Sensor not found');
+
+  res.json(decorateSensor(rows[0]));
+});
+
+module.exports = { listSensors, getSensor, latest, readings, ingest, updateThresholds };

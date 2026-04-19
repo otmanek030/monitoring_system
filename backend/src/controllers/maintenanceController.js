@@ -77,4 +77,37 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { list, create, update, remove };
+/**
+ * PATCH /api/maintenance/:id/assign  body: { assigned_to: <user_id|null> }
+ * Supervisor-only route (requirePerm('assign_maintenance','w')).
+ * Re-opens the order (status='open') if it was planned/closed before.
+ */
+const assign = asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid order id');
+
+  let to = req.body?.assigned_to;
+  if (to === '' || to === undefined) to = null;
+  if (to !== null) {
+    to = parseInt(to, 10);
+    if (!Number.isFinite(to)) throw new ApiError(400, 'Invalid assignee id');
+    const { rows: u } = await query(
+      `SELECT u.user_id FROM users u JOIN roles r ON r.role_id = u.role_id
+       WHERE u.user_id = $1 AND u.is_active
+         AND r.code IN ('technician','supervisor','admin')`, [to]);
+    if (!u[0]) throw new ApiError(400, 'Assignee must be an active technician or supervisor');
+  }
+
+  const { rows } = await query(
+    `UPDATE maintenance_orders
+       SET assigned_to = $1,
+           status = CASE WHEN status IN ('completed','cancelled') THEN 'scheduled'
+                         ELSE status END
+     WHERE order_id = $2
+     RETURNING *`,
+    [to, id]);
+  if (!rows[0]) throw new ApiError(404, 'Order not found');
+  res.json(rows[0]);
+});
+
+module.exports = { list, create, update, remove, assign };

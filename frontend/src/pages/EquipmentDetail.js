@@ -184,7 +184,7 @@ export default function EquipmentDetail() {
   // ── Render guards ─────────────────────────────────────────────────────────
   if (!equipment) {
     return (
-      <div style={{ padding: 24, color: '#7b8799' }}>
+      <div style={{ padding: 24, color: 'var(--tm)' }}>
         {error ? `⚠ ${error}` : 'Loading equipment…'}
       </div>
     );
@@ -200,12 +200,12 @@ export default function EquipmentDetail() {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
                     flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
         <div>
-          <div style={{ fontSize: 12, color: '#7b8799', marginBottom: 4 }}>
-            <Link to="/equipment" style={{ color: '#7b8799' }}>← Equipment</Link>
+          <div style={{ fontSize: 12, color: 'var(--tm)', marginBottom: 4 }}>
+            <Link to="/equipment" style={{ color: 'var(--tm)' }}>← Equipment</Link>
           </div>
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <code style={{ background: '#182343', padding: '2px 8px', borderRadius: 4,
-                           fontSize: 14, color: '#4da3ff' }}>{equipment.tag}</code>
+            <code style={{ background: 'var(--g-soft)', padding: '2px 8px', borderRadius: 4,
+                           fontSize: 14, color: 'var(--g)', fontWeight: 600 }}>{equipment.tag}</code>
             <span style={{ fontSize: 18 }}>{equipment.name}</span>
             <span className={`badge ${connected ? 'ok' : 'warn'}`} style={{ fontSize: 11 }}>
               {connected ? '⬤ live' : '○ reconnecting'}
@@ -217,7 +217,7 @@ export default function EquipmentDetail() {
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
           <TimeRangePicker value={range} onChange={setRange} disabled={loading} />
           {loading && (
-            <span style={{ fontSize: 11, color: '#7b8799' }}>Loading data…</span>
+            <span style={{ fontSize: 11, color: 'var(--tm)' }}>Loading data…</span>
           )}
         </div>
       </div>
@@ -236,7 +236,7 @@ export default function EquipmentDetail() {
 
       {/* ── Sensor charts grouped by measurement ── */}
       {sensorGroups.length === 0 && (
-        <div className="card" style={{ padding: 24, color: '#7b8799', textAlign: 'center' }}>
+        <div className="panel" style={{ padding: 24, color: 'var(--tm)', textAlign: 'center' }}>
           No sensors configured for this equipment.
         </div>
       )}
@@ -244,25 +244,29 @@ export default function EquipmentDetail() {
       {sensorGroups.map(([measurement, sensors]) => (
         <div key={measurement} style={{ marginBottom: 20 }}>
           {/* Group header */}
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#7b8799', letterSpacing: '.8px',
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--tm)', letterSpacing: '.8px',
                         textTransform: 'uppercase', marginBottom: 8, padding: '0 2px',
-                        borderLeft: '3px solid #4da3ff', paddingLeft: 10 }}>
+                        borderLeft: '3px solid #0A4F2A', paddingLeft: 10 }}>
             {MEASUREMENT_LABELS[measurement] || measurement}
           </div>
 
           {/* 2-column grid of charts */}
           <div className="grid-2">
             {sensors.map(s => (
-              <SensorChart
+              <SensorWithThresholds
                 key={s.id}
-                sensorId={s.id}
-                measurement={s.measurement}
-                title={`${s.tag} · ${s.name}`}
-                unit={s.unit || ''}
+                sensor={s}
                 data={getSensorData(s)}
-                thresholds={{ h1: s.h1, h2: s.h2, l1: s.l1, l2: s.l2 }}
-                height={200}
                 live={range === 'live' && connected}
+                canEdit={can('thresholds', 'w')}
+                onSaved={(updated) => {
+                  // merge back into equipment.sensors so limits refresh live
+                  setEquipment(eq => ({
+                    ...eq,
+                    sensors: eq.sensors.map(x =>
+                      x.id === updated.id ? { ...x, ...updated } : x)
+                  }));
+                }}
               />
             ))}
           </div>
@@ -303,7 +307,7 @@ export default function EquipmentDetail() {
 
       {/* ── Recent alarms ── */}
       <div style={{ marginTop: 20 }}>
-        <div className="card">
+        <div className="panel">
           <div className="card-head">
             <strong>Recent alarms</strong>
             <span className="muted" style={{ fontSize: 12 }}>{alarms.length} records</span>
@@ -335,12 +339,12 @@ export default function EquipmentDetail() {
                     <td className="muted" style={{ fontSize: 12 }}>
                       {a.closed_at || a.cleared_ts
                         ? new Date(a.closed_at || a.cleared_ts).toLocaleString()
-                        : <span style={{ color: '#ef4757' }}>Open</span>}
+                        : <span style={{ color: 'var(--red)', fontWeight: 600 }}>Open</span>}
                     </td>
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={5} style={{ textAlign: 'center', padding: 20, color: '#4a5568' }}>
+                    <td colSpan={5} style={{ textAlign: 'center', padding: 20, color: 'var(--tm)' }}>
                       No alarms recorded.
                     </td>
                   </tr>
@@ -357,9 +361,104 @@ export default function EquipmentDetail() {
 // ─── Info box ─────────────────────────────────────────────────────────────────
 function InfoBox({ label, value }) {
   return (
-    <div className="card" style={{ padding: '12px 16px' }}>
+    <div className="panel" style={{ padding: '12px 16px' }}>
       <div className="kpi-label" style={{ marginBottom: 4 }}>{label}</div>
-      <div style={{ color: '#e8eefc', fontSize: 16, fontWeight: 600 }}>{value || '--'}</div>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>{value || '--'}</div>
+    </div>
+  );
+}
+
+// ─── Sensor + inline threshold editor (supervisor+) ──────────────────────────
+function SensorWithThresholds({ sensor, data, live, canEdit, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      {canEdit && (
+        <button className="ghost small"
+          onClick={() => setEditing(true)}
+          style={{ position: 'absolute', top: 10, right: 10, zIndex: 2 }}>
+          ⚙ Thresholds
+        </button>
+      )}
+      <SensorChart
+        sensorId={sensor.id}
+        measurement={sensor.measurement}
+        title={`${sensor.tag} · ${sensor.name}`}
+        unit={sensor.unit || ''}
+        data={data}
+        thresholds={{ h1: sensor.h1, h2: sensor.h2, l1: sensor.l1, l2: sensor.l2 }}
+        height={200}
+        live={live}
+      />
+      {editing && (
+        <ThresholdsModal sensor={sensor}
+          onClose={() => setEditing(false)}
+          onSaved={(u) => { setEditing(false); onSaved && onSaved(u); }} />
+      )}
+    </div>
+  );
+}
+
+function ThresholdsModal({ sensor, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    l2: sensor.l2 ?? '', l1: sensor.l1 ?? '',
+    h1: sensor.h1 ?? '', h2: sensor.h2 ?? '',
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr('');
+    try {
+      const payload = {};
+      for (const k of ['l1','l2','h1','h2']) {
+        if (form[k] === '' || form[k] == null) payload[k] = null;
+        else payload[k] = Number(form[k]);
+      }
+      const updated = await Sensors.setThresholds(sensor.id, payload);
+      onSaved(updated);
+    } catch (e) {
+      setErr(e.response?.data?.message || 'Failed to save thresholds');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <form className="modal" onClick={e => e.stopPropagation()} onSubmit={submit}>
+        <h3>Edit thresholds — {sensor.tag}</h3>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          {sensor.name} · unit: {sensor.unit || '—'}
+        </div>
+        <div className="grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <label>
+            <span className="muted" style={{ fontSize: 12 }}>Low-Low (alarm_low)</span>
+            <input type="number" step="any" value={form.l2}
+                   onChange={e => set('l2', e.target.value)} />
+          </label>
+          <label>
+            <span className="muted" style={{ fontSize: 12 }}>Low (warn_low)</span>
+            <input type="number" step="any" value={form.l1}
+                   onChange={e => set('l1', e.target.value)} />
+          </label>
+          <label>
+            <span className="muted" style={{ fontSize: 12 }}>High (warn_high)</span>
+            <input type="number" step="any" value={form.h1}
+                   onChange={e => set('h1', e.target.value)} />
+          </label>
+          <label>
+            <span className="muted" style={{ fontSize: 12 }}>High-High (alarm_high)</span>
+            <input type="number" step="any" value={form.h2}
+                   onChange={e => set('h2', e.target.value)} />
+          </label>
+        </div>
+        {err && <div className="error">{err}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <button type="button" className="ghost" onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      </form>
     </div>
   );
 }

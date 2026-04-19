@@ -75,9 +75,24 @@ def ensure_ready():
         train()
 
 
+# ─── Physical bounds for an industrial phosphate-plant asset ─────────────────
+# The predictive-maintenance horizon we care about is "days to weeks",
+# at most ~3 months. Anything outside this range is either (a) a broken
+# regressor output, or (b) an asset so healthy that giving a specific
+# RUL is misleading — in both cases we cap and communicate uncertainty.
+RUL_MIN_HOURS = 1.0              # 1 hour  — never "0" unless already failed
+RUL_MAX_HOURS = 90.0 * 24.0      # 90 days — sensible planning horizon
+RUL_REFERENCE_HOURS = RUL_MAX_HOURS  # health_index reference uses same scale
+
+
 def predict(features: list[float] | np.ndarray, runtime_hours: float | None = None,
             expected_life_hours: float | None = None) -> dict:
     """Predict RUL (hours) and derive a 0..1 health index.
+
+    The raw regressor output is **clamped to [1 h, 90 d]** so the downstream
+    dashboard always presents a realistic maintenance-planning window
+    (days → weeks → months, never multi-year). Values outside this range
+    are almost always model drift or noise rather than useful predictions.
 
     If runtime_hours and expected_life_hours are provided we also emit a
     physics-prior version: health = clip(1 - runtime/expected_life, 0, 1).
@@ -86,15 +101,19 @@ def predict(features: list[float] | np.ndarray, runtime_hours: float | None = No
     ensure_ready()
     x = np.asarray(list(features), dtype=float).reshape(1, -1)
     assert _model is not None
-    rul_hours = float(_model.predict(x)[0])
-    rul_hours = max(0.0, rul_hours)
+    raw_hours = float(_model.predict(x)[0])
 
-    # naive 95% CI via +/- 20%
-    lower = rul_hours * 0.8
-    upper = rul_hours * 1.2
+    # ── Clamp to a realistic maintenance-planning window ────────────────
+    # This is the single most important line in this file: without it a
+    # drifted regressor can output millions of hours.
+    rul_hours = float(np.clip(raw_hours, RUL_MIN_HOURS, RUL_MAX_HOURS))
 
-    # health index: how much life is left vs a fixed reference (8000 h)
-    model_hi = min(1.0, rul_hours / 8000.0)
+    # naive 95% CI via +/- 20%, also clamped so the UI never sees silly bounds
+    lower = float(np.clip(rul_hours * 0.8, RUL_MIN_HOURS, RUL_MAX_HOURS))
+    upper = float(np.clip(rul_hours * 1.2, RUL_MIN_HOURS, RUL_MAX_HOURS))
+
+    # health index: how much life is left vs the 90-day reference
+    model_hi = min(1.0, rul_hours / RUL_REFERENCE_HOURS)
     prior_hi = None
     if runtime_hours is not None and expected_life_hours:
         prior_hi = max(0.0, min(1.0, 1.0 - float(runtime_hours) / float(expected_life_hours)))
@@ -105,4 +124,7 @@ def predict(features: list[float] | np.ndarray, runtime_hours: float | None = No
         "rul_lower_95": lower,
         "rul_upper_95": upper,
         "health_index": float(max(0.0, min(1.0, health))),
+        # Flag added so the UI / logs can tell when we had to clip noisy output.
+        "raw_rul_hours": float(max(0.0, raw_hours)),
+        "clipped": bool(raw_hours < RUL_MIN_HOURS or raw_hours > RUL_MAX_HOURS),
     }

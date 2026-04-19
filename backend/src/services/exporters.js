@@ -138,7 +138,170 @@ function streamSummaryPdf(stream, { eqHealth, alarmsBySeverity, from, to }) {
   doc.end();
 }
 
+/**
+ * Shift / personal PDF report: summarises what `user` did during
+ * [from, to] — their notes, alarms raised in the window, and the work
+ * orders assigned to them.
+ *
+ * Uses a deep-green / near-black OCP palette consistent with the UI.
+ * Positioning is strictly cursor-based (never absolute) so that the
+ * "empty state" notices always render in the right place.
+ */
+function streamShiftPdf(stream, {
+  user, notes = [], alarms = [], orders = [], from, to,
+}) {
+  // Deep-green / near-black OCP palette
+  const OCP_PRIMARY = '#0A4F2A';   // primary (deep)
+  const OCP_DEEP    = '#043318';   // near-black green (titles, header band)
+  const OCP_ACCENT  = '#16764A';   // secondary accent
+  const TINT        = '#DFF0E4';   // soft tint
+  const TEXT        = '#0E1B14';   // body text, near-black
+  const MUTED       = '#5E6B66';   // subdued text
+
+  const doc = new PDFDocument({ size: 'A4', margin: 48 });
+  doc.pipe(stream);
+
+  const MARGIN = 48;
+  const PAGE_W = doc.page.width;
+
+  // ── Header band ──────────────────────────────────────────────────────────
+  doc.save();
+  doc.rect(0, 0, PAGE_W, 78).fill(OCP_DEEP);
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(20)
+     .text('Shift Report', MARGIN, 22, { lineBreak: false });
+  doc.font('Helvetica').fontSize(10).fillColor(TINT)
+     .text(`Phoswatch · OCP Benguerir · ${new Date().toISOString().replace('T',' ').slice(0,16)}`,
+           MARGIN, 50, { lineBreak: false });
+  doc.restore();
+
+  // Explicitly move cursor past the header band — do NOT rely on moveDown().
+  doc.x = MARGIN;
+  doc.y = 98;
+
+  // ── User block ───────────────────────────────────────────────────────────
+  doc.fillColor(OCP_PRIMARY).font('Helvetica-Bold').fontSize(13)
+     .text(`${user.full_name || user.username}   (${user.role})`);
+  doc.fillColor(MUTED).font('Helvetica').fontSize(10)
+     .text(`Range: ${from.toISOString().replace('T',' ').slice(0,16)} → ${to.toISOString().replace('T',' ').slice(0,16)}`);
+  doc.moveDown(0.5);
+
+  // Summary stat strip (tint background)
+  const stripY = doc.y;
+  doc.save();
+  doc.rect(MARGIN, stripY, PAGE_W - MARGIN * 2, 24).fill(TINT);
+  doc.restore();
+  doc.fillColor(OCP_DEEP).font('Helvetica-Bold').fontSize(11)
+     .text(
+       `${notes.length} notes   •   ${alarms.length} alarms in period   •   ${orders.length} work orders`,
+       MARGIN + 10, stripY + 7, { width: PAGE_W - MARGIN * 2 - 20 }
+     );
+  doc.y = stripY + 24;
+  doc.moveDown(1);
+  doc.x = MARGIN;
+
+  // ── Helper for section titles ────────────────────────────────────────────
+  function sectionTitle(text) {
+    doc.x = MARGIN;
+    // Make absolutely sure we have space; otherwise break page first.
+    if (doc.y > doc.page.height - 120) doc.addPage();
+    const y = doc.y;
+    // Left accent bar
+    doc.save();
+    doc.rect(MARGIN, y + 2, 3, 14).fill(OCP_ACCENT);
+    doc.restore();
+    doc.fillColor(OCP_DEEP).font('Helvetica-Bold').fontSize(13)
+       .text(text, MARGIN + 10, y, { lineBreak: true });
+    doc.moveDown(0.4);
+    doc.x = MARGIN;
+  }
+
+  function emptyState(message) {
+    doc.x = MARGIN;
+    // Muted italic, guaranteed to be written on this page.
+    doc.font('Helvetica-Oblique').fontSize(10).fillColor(MUTED)
+       .text(message, MARGIN, doc.y, { width: PAGE_W - MARGIN * 2 });
+    doc.font('Helvetica');
+    doc.moveDown(0.5);
+  }
+
+  // ── Shift notes ──────────────────────────────────────────────────────────
+  sectionTitle('Shift notes');
+  if (!notes.length) {
+    emptyState('No notes recorded during this shift.');
+  } else {
+    for (const n of notes) {
+      if (doc.y > doc.page.height - 100) doc.addPage();
+      const color = n.severity === 'critical' ? '#8A1C1C'
+                  : n.severity === 'warning'  ? '#8A5A00'
+                  : OCP_DEEP;
+      doc.fillColor(color).font('Helvetica-Bold').fontSize(11)
+         .text(`[${n.category}/${n.severity}] ${n.title}`,
+               MARGIN, doc.y, { width: PAGE_W - MARGIN * 2 });
+      doc.fillColor(MUTED).font('Helvetica').fontSize(9)
+         .text(
+           `${new Date(n.created_at).toISOString().replace('T',' ').slice(0,16)} · shift ${n.shift}` +
+           (n.equipment_tag ? ` · ${n.equipment_tag}` : ''),
+           { width: PAGE_W - MARGIN * 2 }
+         );
+      if (n.body) {
+        doc.fillColor(TEXT).fontSize(10)
+           .text(n.body, MARGIN + 10, doc.y, { width: PAGE_W - MARGIN * 2 - 10 });
+      }
+      doc.moveDown(0.4);
+    }
+  }
+  doc.moveDown(0.5);
+
+  // ── Alarms ───────────────────────────────────────────────────────────────
+  sectionTitle('Alarms in period');
+  if (!alarms.length) {
+    emptyState('No alarms raised during this shift.');
+  } else {
+    for (const a of alarms.slice(0, 40)) {
+      if (doc.y > doc.page.height - 70) doc.addPage();
+      const color = a.severity === 'fatal' ? '#8A1C1C'
+                  : a.severity === 'warning' ? '#8A5A00'
+                  : TEXT;
+      doc.fillColor(color).font('Helvetica').fontSize(10)
+         .text(
+           `• ${new Date(a.ts).toISOString().replace('T',' ').slice(0,16)}  [${a.severity}]  ${a.equipment_tag || '-'}  ${a.message || ''}`,
+           MARGIN, doc.y, { width: PAGE_W - MARGIN * 2 }
+         );
+    }
+  }
+  doc.moveDown(0.5);
+
+  // ── Work orders ──────────────────────────────────────────────────────────
+  sectionTitle('Work orders assigned to me');
+  if (!orders.length) {
+    emptyState('No work orders assigned.');
+  } else {
+    for (const o of orders) {
+      if (doc.y > doc.page.height - 100) doc.addPage();
+      doc.fillColor(OCP_DEEP).font('Helvetica-Bold').fontSize(11)
+         .text(`#${o.order_id} · ${o.title}  (${o.status})`,
+               MARGIN, doc.y, { width: PAGE_W - MARGIN * 2 });
+      doc.fillColor(MUTED).font('Helvetica').fontSize(9)
+         .text(`priority=${o.priority}   ${o.equipment_tag || ''}`,
+               { width: PAGE_W - MARGIN * 2 });
+      if (o.description) {
+        doc.fillColor(TEXT).fontSize(10)
+           .text(o.description, MARGIN + 10, doc.y, { width: PAGE_W - MARGIN * 2 - 10 });
+      }
+      doc.moveDown(0.3);
+    }
+  }
+
+  // ── Footer ───────────────────────────────────────────────────────────────
+  doc.font('Helvetica').fontSize(8).fillColor(MUTED)
+     .text('Generated by Phoswatch — Real-Time Equipment Monitoring System',
+           MARGIN, doc.page.height - 36,
+           { align: 'center', width: PAGE_W - MARGIN * 2, lineBreak: false });
+
+  doc.end();
+}
+
 module.exports = {
   buildEquipmentXlsx, buildAlarmsXlsx,
-  streamEquipmentPdf, streamSummaryPdf,
+  streamEquipmentPdf, streamSummaryPdf, streamShiftPdf,
 };

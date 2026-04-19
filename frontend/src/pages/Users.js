@@ -43,7 +43,7 @@ export default function Users() {
 
       {error && <div className="error">{error}</div>}
 
-      <div className="card">
+      <div className="panel">
         <table className="table">
           <thead>
             <tr>
@@ -54,11 +54,30 @@ export default function Users() {
           <tbody>
             {items.map(u => (
               <tr key={u.id}>
-                <td><code>{u.username}</code></td>
+                <td>
+                  <code>{u.username}</code>
+                  {u.protected && (
+                    <span
+                      title="System account — protected from modification"
+                      style={{
+                        marginLeft: 6, fontSize: 10, padding: '1px 6px',
+                        borderRadius: 6, background: 'var(--ocp-tint, #DFF0E4)',
+                        color: 'var(--ocp-deep, #0A4F2A)', fontWeight: 700,
+                        letterSpacing: '.4px', border: '1px solid var(--ocp-primary, #0A4F2A)',
+                      }}>
+                      🔒 SYSTEM
+                    </span>
+                  )}
+                </td>
                 <td>{u.full_name}</td>
                 <td className="muted">{u.email || '—'}</td>
                 <td>
-                  <select value={u.role} onChange={(e) => setRole(u, e.target.value)}>
+                  <select
+                    value={u.role}
+                    disabled={u.protected}
+                    title={u.protected ? 'System Administrator role is locked' : ''}
+                    onChange={(e) => setRole(u, e.target.value)}
+                  >
                     <option value="admin">admin</option>
                     <option value="supervisor">supervisor</option>
                     <option value="technician">technician</option>
@@ -67,7 +86,12 @@ export default function Users() {
                   </select>
                 </td>
                 <td>
-                  <button className="ghost small" onClick={() => toggle(u)}>
+                  <button
+                    className="ghost small"
+                    disabled={u.protected}
+                    title={u.protected ? 'System Administrator cannot be disabled' : ''}
+                    onClick={() => toggle(u)}
+                  >
                     {u.is_active ? '● Enabled' : '○ Disabled'}
                   </button>
                 </td>
@@ -75,7 +99,14 @@ export default function Users() {
                   {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '—'}
                 </td>
                 <td style={{ textAlign: 'right' }}>
-                  <button className="ghost small" onClick={() => remove(u)}>Delete</button>
+                  <button
+                    className="ghost small"
+                    disabled={u.protected}
+                    title={u.protected ? 'System Administrator cannot be deleted' : ''}
+                    onClick={() => remove(u)}
+                  >
+                    Delete
+                  </button>
                 </td>
               </tr>
             ))}

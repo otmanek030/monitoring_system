@@ -203,21 +203,42 @@ const predictFailure = asyncHandler(async (req, res) => {
  * RUL
  * --------------------------------------------------------------------- */
 
+// ─── Physical RUL bounds ───────────────────────────────────────────────────
+// Mirror the cap applied in ml-service/rul_estimation.py so that any stale
+// multi-year cached rows are silently clamped to the same [1 h, 90 d] window
+// used by the model going forward. Changes here and in the ML service must
+// stay in sync.
+const RUL_MIN_HOURS = 1;
+const RUL_MAX_HOURS = 90 * 24;   // 90 days
+
+function clampRulHours(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return RUL_MIN_HOURS;
+  return Math.min(RUL_MAX_HOURS, Math.max(RUL_MIN_HOURS, n));
+}
+
 function recommendationFor(rulHours, hi) {
+  // Rescaled to match the 90-day maintenance-planning horizon.
   if (hi < 0.2 || rulHours < 72)   return 'Stop and inspect the asset as soon as possible.';
-  if (hi < 0.4 || rulHours < 720)  return 'Schedule preventive maintenance this week.';
-  if (hi < 0.7 || rulHours < 2000) return 'Plan a maintenance intervention in the next month.';
+  if (hi < 0.4 || rulHours < 168)  return 'Schedule preventive maintenance this week.';
+  if (hi < 0.7 || rulHours < 720)  return 'Plan a maintenance intervention in the next month.';
   return 'Equipment is operating within healthy bounds - continue monitoring.';
 }
 
 function decorateRul(row) {
   if (!row) return null;
-  const rulHours = Number(row.rul_hours) || 0;
-  const hiRaw    = Number(row.health_index);     // 0..1 from ML
+  const rawHours = Number(row.rul_hours) || 0;
+  const rulHours = clampRulHours(rawHours);   // belt-and-suspenders clamp
+  const hiRaw    = Number(row.health_index);  // 0..1 from ML
   const hi       = isNaN(hiRaw) ? null : Math.max(0, Math.min(1, hiRaw));
+
+  // Clamp CI bounds to the same window so the UI never shows silly spreads.
+  const lower = row.rul_lower_95 != null ? clampRulHours(row.rul_lower_95) : null;
+  const upper = row.rul_upper_95 != null ? clampRulHours(row.rul_upper_95) : null;
+
   // Translate the 20% CI into a confidence proxy (narrower CI => higher conf).
-  const spread = row.rul_upper_95 != null && row.rul_lower_95 != null && rulHours > 0
-    ? (Number(row.rul_upper_95) - Number(row.rul_lower_95)) / rulHours
+  const spread = lower != null && upper != null && rulHours > 0
+    ? (upper - lower) / rulHours
     : null;
   const confidence = spread != null
     ? Math.max(0, Math.min(1, 1 - spread))
@@ -225,11 +246,15 @@ function decorateRul(row) {
 
   return {
     ...row,
-    rul_hours: rulHours,
-    health_index_raw: hi,                // keep original 0..1
-    health_index: hi == null ? null : hi * 100,  // UI expects 0..100
+    rul_hours:        rulHours,
+    rul_lower_95:     lower,
+    rul_upper_95:     upper,
+    raw_rul_hours:    rawHours,                  // keep original for diagnostics
+    clipped:          rawHours !== rulHours,
+    health_index_raw: hi,                        // keep original 0..1
+    health_index:     hi == null ? null : hi * 100, // UI expects 0..100
     confidence,
-    recommendation: recommendationFor(rulHours, hi ?? 1),
+    recommendation:   recommendationFor(rulHours, hi ?? 1),
   };
 }
 
@@ -270,24 +295,96 @@ const rulLatest = asyncHandler(async (req, res) => {
     });
   }
 
-  // Cache stale - compute a fresh RUL from recent aggregates
+  // Cache stale - compute a fresh RUL from recent aggregates.
+  //
+  // The feature vector MUST be meaningfully different across equipment,
+  // otherwise the MLP will emit the same number for every asset. We build
+  // a 10-dim vector that matches the shape `synthetic_rul_dataset` trains
+  // on (mean, std, min, max, p25_proxy, p75_proxy, range, last, slope, jerk)
+  // computed from the equipment's own sensor history, and we bake the
+  // equipment's lifecycle position (runtime / expected_life) into the
+  // "age" of the signal so two assets with similar sensor noise but
+  // different operating hours still get different RULs.
   let fresh = null;
   try {
-    const { rows: feats } = await query(
-      `SELECT AVG(r.value) AS avg_v, STDDEV(r.value) AS std_v,
-              MAX(r.value) AS max_v, MIN(r.value) AS min_v,
-              COUNT(*)::int AS n
+    // Aggregate stats over the last 6 h, per equipment
+    const { rows: statRows } = await query(
+      `SELECT AVG(r.value)                AS avg_v,
+              STDDEV_SAMP(r.value)        AS std_v,
+              MAX(r.value)                AS max_v,
+              MIN(r.value)                AS min_v,
+              PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY r.value) AS p25_v,
+              PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY r.value) AS p75_v,
+              COUNT(*)::int               AS n
        FROM sensors s
        JOIN sensor_readings r ON r.sensor_id = s.sensor_id
        WHERE s.equipment_id = $1 AND r.ts > NOW() - INTERVAL '6 hours'`,
       [id]);
-    const f = feats[0] || {};
+
+    // Also fetch the last value + approximate jerk for this equipment.
+    // Jerk = mean absolute first-difference of consecutive readings; needs
+    // a two-level CTE so we can aggregate *over* the window function.
+    const { rows: dynRows } = await query(
+      `WITH recent AS (
+         SELECT r.value, r.ts
+         FROM sensors s
+         JOIN sensor_readings r ON r.sensor_id = s.sensor_id
+         WHERE s.equipment_id = $1
+           AND r.ts > NOW() - INTERVAL '6 hours'
+         ORDER BY r.ts DESC
+         LIMIT 200
+       ),
+       diffed AS (
+         SELECT value,
+                value - LAG(value) OVER (ORDER BY ts) AS dv,
+                ts
+         FROM recent
+       )
+       SELECT
+         COALESCE((SELECT value FROM recent ORDER BY ts DESC LIMIT 1), 0) AS last_v,
+         COALESCE(AVG(ABS(dv)), 0)                                         AS jerk_v
+       FROM diffed`,
+      [id]);
+
+    const f = statRows[0] || {};
+    const d = dynRows[0] || {};
+
+    const avg = Number(f.avg_v) || 0;
+    const std = Number(f.std_v) || 0;
+    const mn  = Number(f.min_v) || 0;
+    const mx  = Number(f.max_v) || 0;
+    const p25 = Number(f.p25_v) || 0;
+    const p75 = Number(f.p75_v) || 0;
+    const n   = Number(f.n)     || 0;
+    const last = Number(d.last_v) || 0;
+    const jerk = Number(d.jerk_v) || 0;
+
+    // Lifecycle "age" factor [0..1] — amplifies features proportional to
+    // how far the asset is into its expected life. A brand-new pump and
+    // an 80%-worn pump with identical recent vibration should get very
+    // different RULs.
+    const runtime = eq.runtime_hours != null ? Number(eq.runtime_hours) : 0;
+    const expLife = eq.expected_life_hours != null ? Number(eq.expected_life_hours) : 0;
+    const age = expLife > 0 ? Math.max(0, Math.min(1, runtime / expLife)) : 0;
+    const ageBoost = 1 + 2 * age;   // young asset => 1.0, end-of-life => 3.0
+
+    // slope of the recent window (end - start) / (n-1), approximated as
+    // (last - avg) since we don't have the exact first value handy.
+    const slope = n > 1 ? (last - avg) / Math.max(n - 1, 1) : 0;
+    const range = mx - mn;
+
+    // Feature vector — matches synthetic_rul_dataset's 10 dims exactly.
     const featureVec = [
-      Number(f.avg_v) || 0, Number(f.std_v) || 0,
-      Number(f.max_v) || 0, Number(f.min_v) || 0,
-      Number(f.n) || 0,
-      // pad to 10 - the MLP was trained on a 10-vector
-      0, 0, 0, 0, 0,
+      avg  * ageBoost,
+      std  * ageBoost,
+      mn,
+      mx   * ageBoost,
+      p25,
+      p75  * ageBoost,
+      range * ageBoost,
+      last * ageBoost,
+      slope,
+      jerk * ageBoost,
     ];
 
     fresh = await mlClient.predictRul({

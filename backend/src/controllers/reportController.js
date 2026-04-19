@@ -113,4 +113,56 @@ const summaryPdf = asyncHandler(async (req, res) => {
   exporters.streamSummaryPdf(res, { eqHealth, alarmsBySeverity, from, to });
 });
 
-module.exports = { equipmentXlsx, equipmentPdf, alarmsXlsx, summaryPdf };
+/**
+ * GET /api/reports/my-shift/pdf?from=&to=
+ * Per-user shift summary: the calling user's notes, the alarms raised in
+ * the window, and the work orders assigned to them.
+ *
+ * Accessible to anyone with `my_shift:r`.
+ */
+const myShiftPdf = asyncHandler(async (req, res) => {
+  const { from, to } = parseRange(req.query);
+  const uid = req.user.id;
+
+  const { rows: u } = await query(
+    `SELECT u.user_id, u.username, u.full_name, u.email, r.code AS role
+     FROM users u JOIN roles r ON r.role_id = u.role_id
+     WHERE u.user_id = $1`, [uid]);
+  const user = u[0] || { username: req.user.username, role: req.user.role };
+
+  // Notes the user wrote during the window
+  const { rows: notes } = await query(
+    `SELECT n.*, e.tag_code AS equipment_tag
+     FROM operator_notes n
+     LEFT JOIN equipment e ON e.equipment_id = n.equipment_id
+     WHERE n.user_id = $1 AND n.created_at BETWEEN $2 AND $3
+     ORDER BY n.created_at ASC`,
+    [uid, from, to]);
+
+  // All alarms raised in the window
+  const { rows: alarms } = await query(
+    `SELECT a.ts, a.severity, a.message, e.tag_code AS equipment_tag
+     FROM alarms a
+     JOIN equipment e ON e.equipment_id = a.equipment_id
+     WHERE a.ts BETWEEN $1 AND $2
+     ORDER BY a.ts ASC LIMIT 200`,
+    [from, to]);
+
+  // Work orders assigned to this user (open or touched in the window)
+  const { rows: orders } = await query(
+    `SELECT mo.*, e.tag_code AS equipment_tag
+     FROM maintenance_orders mo
+     JOIN equipment e ON e.equipment_id = mo.equipment_id
+     WHERE mo.assigned_to = $1
+       AND (mo.status <> 'completed'
+            OR mo.created_at BETWEEN $2 AND $3)
+     ORDER BY mo.priority DESC, mo.created_at DESC`,
+    [uid, from, to]);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition',
+    `attachment; filename="shift_${user.username}_${from.toISOString().slice(0,10)}.pdf"`);
+  exporters.streamShiftPdf(res, { user, notes, alarms, orders, from, to });
+});
+
+module.exports = { equipmentXlsx, equipmentPdf, alarmsXlsx, summaryPdf, myShiftPdf };

@@ -28,6 +28,7 @@ import Predictions    from './pages/Predictions';
 import Maintenance    from './pages/Maintenance';
 import Reports        from './pages/Reports';
 import Users          from './pages/Users';
+import Notes          from './pages/Notes';
 
 import './styles/App.css';
 
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="alarms"         element={<Alarms />} />
           <Route path="predictions"    element={<Predictions />} />
           <Route path="maintenance"    element={<Maintenance />} />
+          <Route path="notes"          element={<Notes />} />
           <Route path="reports"        element={<Reports />} />
           <Route path="users"          element={<AdminOnly><Users /></AdminOnly>} />
         </Route>

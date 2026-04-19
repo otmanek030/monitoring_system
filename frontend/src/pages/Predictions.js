@@ -1,10 +1,6 @@
 /**
- * AI predictions console:
- *  - choose an equipment + sensor, run an anomaly prediction,
- *  - run a failure prediction for the equipment (next 7-14 days),
- *  - get the latest RUL.
- *
- * Shows a small history chart of past anomaly scores.
+ * Predictions — AI predictions console (dark-themed).
+ * Anomaly detection, failure prediction, RUL indicator.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Equipment as EqApi, Predictions } from '../services/api';
@@ -14,11 +10,13 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
+const AXIS_TICK = { fill: 'var(--tm)', fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace" };
+
 export default function PredictionsPage() {
   const [equipment,    setEquipment]    = useState([]);
   const [equipmentId,  setEquipmentId]  = useState('');
   const [sensorId,     setSensorId]     = useState('');
-  const [window,       setWindow]       = useState(30);
+  const [windowMin,    setWindowMin]    = useState(30);
   const [horizon,      setHorizon]      = useState(7);
   const [anomaly,      setAnomaly]      = useState(null);
   const [anomalyHist,  setAnomalyHist]  = useState([]);
@@ -27,7 +25,6 @@ export default function PredictionsPage() {
   const [busy,         setBusy]         = useState(false);
   const [error,        setError]        = useState('');
 
-  // Load equipment list once.
   useEffect(() => {
     EqApi.list().then((d) => {
       const items = d.items || d;
@@ -36,7 +33,6 @@ export default function PredictionsPage() {
     }).catch(e => setError(e.response?.data?.message || 'Failed to load equipment'));
   }, []);
 
-  // Load sensors for the chosen equipment + default RUL.
   useEffect(() => {
     if (!equipmentId) return;
     EqApi.get(equipmentId).then(eq => {
@@ -46,7 +42,6 @@ export default function PredictionsPage() {
     Predictions.rul(equipmentId).then(setRul).catch(() => setRul(null));
   }, [equipmentId]);
 
-  // Refresh anomaly history when sensor changes.
   useEffect(() => {
     if (!sensorId) { setAnomalyHist([]); return; }
     Predictions.anomalyHistory(sensorId)
@@ -65,14 +60,14 @@ export default function PredictionsPage() {
     if (!sensorId) return;
     setBusy(true); setError('');
     try {
-      const a = await Predictions.anomaly(Number(sensorId), Number(window));
+      const a = await Predictions.anomaly(Number(sensorId), Number(windowMin));
       setAnomaly(a);
       const hist = await Predictions.anomalyHistory(sensorId);
       setAnomalyHist((hist.items || hist).map(i => ({
         ...i, t: new Date(i.created_at).toLocaleTimeString([], { hour12: false }),
       })));
     } catch (e) { setError(e.response?.data?.message || 'Anomaly prediction failed'); }
-    finally   { setBusy(false); }
+    finally    { setBusy(false); }
   };
 
   const runFailure = async () => {
@@ -82,77 +77,107 @@ export default function PredictionsPage() {
       const f = await Predictions.failure(Number(equipmentId), Number(horizon));
       setFailure(f);
     } catch (e) { setError(e.response?.data?.message || 'Failure prediction failed'); }
-    finally   { setBusy(false); }
+    finally    { setBusy(false); }
   };
 
   return (
     <div>
       <div className="page-head">
-        <h2>AI predictions</h2>
+        <h2>AI Predictions</h2>
+        <div style={{ fontSize: 11.5, color: 'var(--tm)' }}>
+          Anomaly detection · Predictive maintenance · RUL estimation
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}
 
-      <div className="card">
-        <div className="grid-3">
-          <label>
-            <span className="muted" style={{ fontSize: 12 }}>Equipment</span>
-            <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)}>
-              {equipment.map(e => (
-                <option key={e.id} value={e.id}>{e.tag} — {e.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span className="muted" style={{ fontSize: 12 }}>Sensor</span>
-            <select value={sensorId} onChange={(e) => setSensorId(e.target.value)}>
-              {sensors.map(s => (
-                <option key={s.id} value={s.id}>{s.tag} — {s.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span className="muted" style={{ fontSize: 12 }}>Window (min)</span>
-            <input type="number" min="5" max="120" value={window}
-                   onChange={(e) => setWindow(e.target.value)} />
-          </label>
+      {/* Controls panel */}
+      <div className="panel" style={{ marginBottom: 10 }}>
+        <div className="panel-head">
+          <span className="title">Model Controls</span>
+          {busy && <span style={{ fontSize: 10.5, color: 'var(--g)', marginLeft: 6 }}>Running…</span>}
+          <span className="menu">⋯</span>
         </div>
-        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-          <button className="primary" onClick={runAnomaly} disabled={busy || !sensorId}>
-            🔍 Detect anomaly
-          </button>
-          <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span className="muted" style={{ fontSize: 12 }}>Horizon</span>
-            <input type="number" min="1" max="30" value={horizon}
-                   onChange={(e) => setHorizon(e.target.value)} style={{ width: 70 }} />
-            <button className="primary" onClick={runFailure} disabled={busy || !equipmentId}>
-              📈 Predict failure
+        <div className="panel-body">
+          <div className="grid-3" style={{ marginBottom: 12, gap: 10 }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 10.5, color: 'var(--tm)', fontWeight: 700, letterSpacing: .3, textTransform: 'uppercase' }}>Equipment</span>
+              <select value={equipmentId} onChange={(e) => setEquipmentId(e.target.value)} style={{ width: '100%' }}>
+                {equipment.map(e => (
+                  <option key={e.id} value={e.id}>{e.tag} — {e.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 10.5, color: 'var(--tm)', fontWeight: 700, letterSpacing: .3, textTransform: 'uppercase' }}>Sensor</span>
+              <select value={sensorId} onChange={(e) => setSensorId(e.target.value)} style={{ width: '100%' }}>
+                {sensors.map(s => (
+                  <option key={s.id} value={s.id}>{s.tag} — {s.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <span style={{ fontSize: 10.5, color: 'var(--tm)', fontWeight: 700, letterSpacing: .3, textTransform: 'uppercase' }}>Window (min)</span>
+              <input type="number" min="5" max="120" value={windowMin}
+                onChange={(e) => setWindowMin(e.target.value)} style={{ width: '100%' }} />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button className="primary" onClick={runAnomaly} disabled={busy || !sensorId}>
+              Detect Anomaly
             </button>
-          </label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+              <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Horizon:</span>
+              <input type="number" min="1" max="30" value={horizon}
+                onChange={(e) => setHorizon(e.target.value)} style={{ width: 64 }} />
+              <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>days</span>
+              <button className="primary" onClick={runFailure} disabled={busy || !equipmentId}>
+                Predict Failure
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="grid-2" style={{ marginTop: 16 }}>
+      {/* Top row: anomaly + RUL */}
+      <div className="grid-2" style={{ marginBottom: 10 }}>
         <AnomalyDisplay result={anomaly} />
         <RULIndicator rul={rul} />
       </div>
 
-      <div className="grid-2" style={{ marginTop: 16 }}>
+      {/* Bottom row: failure + anomaly history */}
+      <div className="grid-2">
         <FailureCard failure={failure} />
-        <div className="card">
-          <div className="card-head">
-            <strong>Anomaly score history</strong>
-            <span className="muted" style={{ fontSize: 12 }}>last {anomalyHist.length} runs</span>
+
+        {/* Anomaly score history chart */}
+        <div className="panel">
+          <div className="panel-head">
+            <span className="title">Anomaly Score History</span>
+            <span style={{ fontSize: 10.5, color: 'var(--tm)', marginLeft: 4 }}>
+              {anomalyHist.length} runs
+            </span>
+            <span className="menu">⋯</span>
           </div>
-          <div style={{ width: '100%', height: 200 }}>
-            <ResponsiveContainer>
-              <LineChart data={anomalyHist}>
-                <CartesianGrid stroke="#1c2538" strokeDasharray="3 3" />
-                <XAxis dataKey="t" tick={{ fill: '#7b8799', fontSize: 11 }} />
-                <YAxis domain={[0, 1]} tick={{ fill: '#7b8799', fontSize: 11 }} />
-                <Tooltip contentStyle={{ background: '#121a2b', border: '1px solid #25314a' }} />
-                <Line type="monotone" dataKey="score" stroke="#ffb04a"
-                      strokeWidth={2} dot={false} isAnimationActive={false} />
+          <div style={{ flex: 1, minHeight: 180, padding: '8px 4px 4px' }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={anomalyHist} margin={{ top: 4, right: 20, left: -10, bottom: 0 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="t" tick={AXIS_TICK} tickLine={false} axisLine={{ stroke: 'var(--border)' }} />
+                <YAxis domain={[0, 1]} tick={AXIS_TICK} tickLine={false} axisLine={false} width={40} />
+                <Tooltip
+                  contentStyle={{
+                    background: '#fff',
+                    border: '1px solid var(--g-soft)',
+                    color: 'var(--tx)', fontSize: 11.5, borderRadius: 5,
+                    boxShadow: '0 2px 8px rgba(0,0,0,.08)',
+                  }}
+                  labelStyle={{ color: 'var(--tm)' }}
+                />
+                {/* Anomaly threshold line */}
+                <Line
+                  type="monotone" dataKey="score" stroke="var(--orange)"
+                  strokeWidth={1.8} dot={false} isAnimationActive={false}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -165,42 +190,66 @@ export default function PredictionsPage() {
 function FailureCard({ failure }) {
   if (!failure) {
     return (
-      <div className="card">
-        <div className="card-head"><strong>Predictive maintenance</strong></div>
-        <div className="muted" style={{ padding: 12 }}>
-          Run a failure prediction to see the probability distribution across modes.
+      <div className="panel">
+        <div className="panel-head">
+          <span className="title">Predictive Maintenance</span>
+          <span className="menu">⋯</span>
+        </div>
+        <div style={{ padding: '22px 16px', textAlign: 'center', color: 'var(--tm)', fontSize: 12.5 }}>
+          <div style={{ fontSize: 22, marginBottom: 6 }}>📈</div>
+          Run a failure prediction to see the probability distribution
         </div>
       </div>
     );
   }
-  const modes = failure.mode_probabilities || {};
-  const sorted = Object.entries(modes).sort((a, b) => b[1] - a[1]);
+
+  const modes   = failure.mode_probabilities || {};
+  const sorted  = Object.entries(modes).sort((a, b) => b[1] - a[1]);
   const overall = Math.round((Number(failure.failure_probability) || 0) * 100);
-  const color   = overall > 60 ? '#ff5566' : overall > 30 ? '#ffb04a' : '#2cd08c';
+  const color   = overall > 60 ? 'var(--red)' : overall > 30 ? 'var(--yellow)' : 'var(--g)';
+  const barColor= overall > 60 ? 'var(--red)' : overall > 30 ? 'var(--yellow)' : 'var(--g)';
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <strong>Predictive maintenance</strong>
-        <span className="muted" style={{ fontSize: 12 }}>
-          horizon {failure.horizon_days} d
+    <div className="panel">
+      <div className="panel-head">
+        <span className="title">Predictive Maintenance</span>
+        <span style={{ fontSize: 10.5, color: 'var(--tm)', marginLeft: 4 }}>
+          horizon {failure.horizon_days}d
         </span>
+        <span className="menu">⋯</span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-        <div style={{ fontSize: 28, fontWeight: 600, color }}>{overall}%</div>
-        <div className="muted" style={{ fontSize: 12 }}>overall failure probability</div>
-      </div>
-      <div style={{ marginTop: 10 }}>
-        {sorted.map(([mode, p]) => (
-          <div key={mode} style={{ marginBottom: 6 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>{mode}</span>
-              <span className="muted">{Math.round(p * 100)}%</span>
-            </div>
-            <div className="meter"><div className="meter-fill"
-                                        style={{ width: `${p * 100}%`, background: color }} /></div>
-          </div>
-        ))}
+      <div className="panel-body" style={{ gap: 10 }}>
+        {/* Overall probability */}
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span style={{
+            fontSize: 34, fontWeight: 700, color,
+            fontFamily: "'JetBrains Mono', monospace",
+            letterSpacing: -1,
+          }}>
+            {overall}<span style={{ fontSize: 16, fontWeight: 400, color: 'var(--tm)', marginLeft: 2 }}>%</span>
+          </span>
+          <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>overall failure probability</span>
+        </div>
+
+        {/* Mode breakdown */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 4 }}>
+          {sorted.map(([mode, p]) => {
+            const pct = Math.round(p * 100);
+            return (
+              <div key={mode}>
+                <div className="bg-row">
+                  <span className="bg-label">{mode}</span>
+                  <div className="bg-track">
+                    <div className="bg-fill" style={{ width: `${pct}%`, background: barColor }} />
+                  </div>
+                  <span className={`bg-val ${pct > 60 ? 'red' : pct > 30 ? 'yellow' : 'green'}`}>
+                    {pct}%
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

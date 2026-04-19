@@ -59,9 +59,17 @@ function requireRole(...roles) {
 function requirePerm(resource, action = 'r') {
   return (req, _res, next) => {
     if (!req.user) return next(new ApiError(401, 'Not authenticated'));
-    const p = req.user.permissions?.[resource];
+    const perms = req.user.permissions || {};
+
+    // Global wildcard on the whole permission bag ({"*":"*"} = admin)
+    const star = perms['*'];
+    if (star === '*' || star === true) return next();
+    if (typeof star === 'string' && star.includes(action)) return next();
+
+    const p = perms[resource];
     if (p === '*' || p === true) return next();
     if (typeof p === 'string' && p.includes(action)) return next();
+
     next(new ApiError(403, `Requires permission: ${resource}:${action}`));
   };
 }

@@ -24,6 +24,7 @@ const predictionRoutes  = require('./routes/anomalies');
 const maintenanceRoutes = require('./routes/maintenance');
 const reportRoutes      = require('./routes/reports');
 const userRoutes        = require('./routes/users');
+const notesRoutes       = require('./routes/notes');
 
 function buildApp() {
   const app = express();
@@ -63,6 +64,7 @@ function buildApp() {
   app.use('/api/maintenance',  maintenanceRoutes);
   app.use('/api/reports',      reportRoutes);
   app.use('/api/users',        userRoutes);
+  app.use('/api/notes',        notesRoutes);
 
   // 404 + central error handler
   app.use(notFound);

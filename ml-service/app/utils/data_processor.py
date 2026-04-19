@@ -65,31 +65,42 @@ def synthetic_training_set(n_samples: int = 4000, n_features: int = 10,
     return X[idx], y[idx]
 
 
-def synthetic_rul_dataset(n_units: int = 150, seed: int = 42):
+def synthetic_rul_dataset(n_units: int = 300, seed: int = 42):
     """RUL regression data: per-window features -> remaining useful life (hours).
 
-    Each "unit" has a random total life between 2000-8000 h; we simulate
-    running-condition features that drift towards end-of-life.
+    The label range is aligned with the downstream clamp [1 h, 90 d = 2160 h],
+    so the model's natural output distribution already fits the maintenance-
+    planning window. Each "unit" has a random total life between 24-2160 h
+    (1 day -> 90 days). Windows are sampled densely enough that we cover
+    the full degradation curve.
+
+    Feature vector (length 10) is designed to be DISCRIMINATIVE:
+      - degraded units (high age)  -> larger mean/std, larger jerk
+      - healthy units (low age)    -> small mean/std, near-zero jerk
+    so different equipment with different sensor signatures will get
+    meaningfully different RUL predictions.
     """
     rng = np.random.default_rng(seed)
     X, y = [], []
     for _ in range(n_units):
-        life = int(rng.integers(2000, 8000))
-        for t in range(0, life, int(rng.integers(50, 200))):
+        # Life expectancy in HOURS within the 1h-90d maintenance window
+        life = int(rng.integers(24, 2160))
+        # Sample every 1-20 h so each unit contributes several windows
+        step = int(rng.integers(1, max(20, life // 50)))
+        for t in range(0, life, step):
             rul = life - t
-            # features degrade with age
-            age = t / life
+            age = t / life  # 0 (new) -> 1 (end of life)
             feats = [
-                rng.normal(0.5 + age, 0.1),     # mean "vibration-like"
-                rng.normal(1.0 + 2 * age, 0.2), # std inflates
-                rng.normal(-1.0 - age, 0.1),
-                rng.normal(1.0 + age, 0.2),
-                rng.normal(0.0, 0.1),
-                rng.normal(0.5 + age, 0.1),
-                rng.normal(2.0 * age, 0.1),
-                rng.normal(0.2 + age, 0.1),
-                rng.normal(0.01 * (1 + age), 0.005),
-                rng.normal(0.02 * (1 + age), 0.005),
+                rng.normal(0.5 + 2.0 * age, 0.15),    # vibration-like mean
+                rng.normal(1.0 + 4.0 * age, 0.25),    # std inflates sharply
+                rng.normal(-1.0 - 1.5 * age, 0.15),
+                rng.normal(1.0 + 3.0 * age, 0.25),
+                rng.normal(0.0, 0.15),
+                rng.normal(0.5 + 2.0 * age, 0.15),
+                rng.normal(3.0 * age, 0.15),          # range grows
+                rng.normal(0.2 + 2.0 * age, 0.15),
+                rng.normal(0.01 * (1 + 3 * age), 0.01),  # slope
+                rng.normal(0.02 * (1 + 4 * age), 0.01),  # jerk
             ]
             X.append(feats); y.append(rul)
     return np.asarray(X, dtype=float), np.asarray(y, dtype=float)

@@ -30,9 +30,14 @@ export function AuthProvider({ children }) {
     closeSocket();
   };
 
+  /** Mirrors backend middleware.auth.requirePerm: supports {"*":"*"} and per-resource strings. */
   const can = (resource, action = 'r') => {
     if (!user) return false;
-    const p = user.permissions?.[resource];
+    const perms = user.permissions || {};
+    const star = perms['*'];
+    if (star === '*' || star === true) return true;
+    if (typeof star === 'string' && star.includes(action)) return true;
+    const p = perms[resource];
     if (p === '*' || p === true) return true;
     if (typeof p === 'string' && p.includes(action)) return true;
     return false;

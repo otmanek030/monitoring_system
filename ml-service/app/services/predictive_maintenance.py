@@ -60,10 +60,64 @@ def load() -> Pipeline | None:
     return None
 
 
+def _synthetic_failure_dataset(n_samples: int = 6000, failure_ratio: float = 0.35,
+                               seed: int = 42):
+    """Purpose-built training set for the failure-prob XGBoost.
+
+    The previous implementation reused `synthetic_training_set` (designed for
+    anomaly detection), which made the failure class *extremely* separable —
+    so at inference the StandardScaler+XGBoost pegged every real sensor input
+    at probability 1.0. Here we build features whose distributions actually
+    overlap between "healthy" and "about to fail", so the classifier learns
+    a gradient between 0 and 1 instead of a hard yes/no threshold.
+
+    Feature layout matches `_vector_from_features`:
+       [mean_avg, std_avg, min_avg, max_avg, mean_max, max_max,
+        mean_std, max_std, range_avg, range_std]
+    """
+    rng = np.random.default_rng(seed)
+    n_fail = int(n_samples * failure_ratio)
+    n_ok = n_samples - n_fail
+
+    def _sample(is_failure: bool, n: int) -> np.ndarray:
+        # base scale shared by both classes so their distributions overlap
+        mean_avg = rng.normal(0.5, 0.3, n)
+        std_avg  = rng.normal(0.2, 0.1, n).clip(0.01, None)
+        mx       = rng.normal(1.0, 0.3, n)
+        sd       = rng.normal(0.3, 0.15, n).clip(0.01, None)
+
+        if is_failure:
+            # failing assets: slightly higher mean, MUCH higher variance/jerk
+            mean_avg += rng.normal(0.4, 0.25, n)
+            std_avg  += rng.normal(0.5, 0.25, n).clip(0, None)
+            mx       += rng.normal(0.8, 0.4, n)
+            sd       += rng.normal(0.7, 0.35, n).clip(0, None)
+
+        return np.column_stack([
+            mean_avg,            # mean_avg
+            std_avg,             # std_avg
+            mean_avg - rng.uniform(0.1, 0.3, n),   # min_avg
+            mean_avg + rng.uniform(0.1, 0.3, n),   # max_avg
+            mx,                  # mean_max
+            mx + rng.uniform(0.0, 0.5, n),         # max_max
+            sd,                  # mean_std
+            sd + rng.uniform(0.0, 0.4, n),         # max_std
+            rng.uniform(0.05, 0.5, n) + (0.8 if is_failure else 0) * rng.random(n),
+            rng.uniform(0.05, 0.5, n) + (0.6 if is_failure else 0) * rng.random(n),
+        ])
+
+    X_ok   = _sample(False, n_ok)
+    X_fail = _sample(True,  n_fail)
+    X = np.vstack([X_ok, X_fail])
+    y = np.concatenate([np.zeros(n_ok), np.ones(n_fail)])
+    idx = rng.permutation(X.shape[0])
+    return X[idx], y[idx]
+
+
 def train(X: np.ndarray | None = None, y: np.ndarray | None = None) -> dict:
     global _model
     if X is None or y is None:
-        X, y = synthetic_training_set(n_samples=6000, contamination=0.15)
+        X, y = _synthetic_failure_dataset(n_samples=6000, failure_ratio=0.35)
     pipe = _pipeline()
     pipe.fit(X, y)
     joblib.dump(pipe, path())

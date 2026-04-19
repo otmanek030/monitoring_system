@@ -246,3 +246,41 @@ phoswatch/
 ## License
 
 Internal academic project — OCP Group / EST Essaouira (PFE 2026).
+
+## For the data base   
+
+Your database lives in two places — the SQL definitions on disk and the actual running data inside a Docker volume.
+SQL files on disk (the schema and seed data that build the DB on first start):
+
+C:\Users\OTHMANE\PFE\phoswatch\database\init.sql — tables, hypertables, indexes, TimescaleDB setup
+C:\Users\OTHMANE\PFE\phoswatch\database\seed.sql — initial rows (equipment, sensors, users, roles)
+C:\Users\OTHMANE\PFE\phoswatch\database\03-roles-upgrade.sql — the roles/permissions + operator_notes migration
+C:\Users\OTHMANE\PFE\phoswatch\database\mock_data\ — CSV / mock readings
+
+The actual database data (rows currently being read/written):
+
+Container name: phoswatch-database
+Image: timescale/timescaledb:latest-pg15
+Host port: 5432
+Credentials: user phoswatch_user, password phoswatch_pass, db phoswatch_db
+Data storage: Docker named volume postgres_data, mounted inside the container at /var/lib/postgresql/data
+
+Useful commands (PowerShell):
+powershell# See the volume on your host
+docker volume inspect phoswatch_postgres_data
+
+# Open an interactive psql shell inside the container
+docker exec -it phoswatch-database psql -U phoswatch_user -d phoswatch_db
+
+# List all tables
+docker exec -it phoswatch-database psql -U phoswatch_user -d phoswatch_db -c "\dt"
+
+# Quick row counts
+docker exec -it phoswatch-database psql -U phoswatch_user -d phoswatch_db -c "SELECT COUNT(*) FROM sensor_readings;"
+
+# Connect from an external client (DBeaver, pgAdmin, DataGrip)
+# Host: localhost   Port: 5432   DB: phoswatch_db
+
+
+# FOR THE CHANGES 
+
