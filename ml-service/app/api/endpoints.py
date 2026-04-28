@@ -54,7 +54,6 @@ def predict_anomaly(req: AnomalyRequest):
 @router.post("/predict/anomaly/batch")
 def predict_anomaly_batch(req: BatchAnomalyRequest):
     """Score the last-30-min window of every sensor in one call.
-
     Used by the dashboard to paint an overview row.
     """
     if not req.sensor_ids:

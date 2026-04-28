@@ -11,6 +11,7 @@
  */
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import CommunicationPanel from './Communication/CommunicationPanel';
 
 /* ── SVG icons ───────────────────────────────────────────────── */
 const Icons = {
@@ -112,6 +113,17 @@ const Icons = {
       <rect x="2" y="17" width="20" height="5" rx="1"/>
     </svg>
   ),
+  boiler: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <rect x="3" y="4" width="18" height="14" rx="2"/>
+      <path d="M7 4V2M12 4V2M17 4V2"/>
+      <path d="M3 10h18"/>
+      <circle cx="8" cy="15" r="1.2" fill="currentColor"/>
+      <circle cx="12" cy="15" r="1.2" fill="currentColor"/>
+      <circle cx="16" cy="15" r="1.2" fill="currentColor"/>
+      <path d="M8 18v2M12 18v2M16 18v2"/>
+    </svg>
+  ),
 };
 
 /* ── Page meta ───────────────────────────────────────────────── */
@@ -121,8 +133,9 @@ const PAGE_META = {
   '/alarms':      { label: 'Alarms',         unit: 'Active Events' },
   '/predictions': { label: 'AI Predictions', unit: 'ML Models' },
   '/maintenance': { label: 'Maintenance',    unit: 'Work Orders' },
-  '/notes':       { label: 'Shift Notes',    unit: 'Logbook' },
   '/reports':     { label: 'Reports',        unit: 'Export' },
+  '/boiler':      { label: 'Boiler Tracking', unit: 'Usage Monitor' },
+  '/notes':       { label: 'Shift Notes',    unit: 'Logbook' },
   '/users':       { label: 'Users',          unit: 'Access Control' },
 };
 
@@ -133,8 +146,9 @@ const NAV_ITEMS = [
   { to: '/alarms',      label: 'Alarms',         icon: Icons.alarms,                  perm: 'alarms'      },
   { to: '/predictions', label: 'AI Predictions', icon: Icons.predictions,             perm: 'predictions' },
   { to: '/maintenance', label: 'Maintenance',    icon: Icons.maintenance,             perm: 'maintenance' },
-  { to: '/notes',       label: 'Shift Notes',    icon: Icons.notes,                   perm: 'notes'       },
   { to: '/reports',     label: 'Reports',        icon: Icons.reports,                 perm: 'reports'     },
+  { to: '/boiler',      label: 'Boiler Tracking', icon: Icons.boiler,                 perm: 'equipment'   },
+  { to: '/notes',       label: 'Shift Notes',    icon: Icons.notes,                   allRoles: true      },
   { to: '/users',       label: 'Users',          icon: Icons.users,                   adminOnly: true     },
 ];
 
@@ -150,6 +164,7 @@ export default function Layout() {
 
   const visibleLinks = NAV_ITEMS.filter(item => {
     if (item.adminOnly) return user?.role === 'admin';
+    if (item.allRoles)  return !!user; // visible to all authenticated users
     if (item.perm === 'reports') return can('reports') || can('my_shift');
     return can(item.perm);
   });
@@ -159,9 +174,9 @@ export default function Layout() {
 
       {/* ── Icon nav rail ── */}
       <nav className="nav-rail">
-        <div className="nav-logo" title="PhosWatch">
+        <NavLink to="/" end className="nav-logo" title="PhosWatch Dashboard">
           {Icons.logo}
-        </div>
+        </NavLink>
 
         {visibleLinks.map(item => (
           <NavLink
@@ -283,6 +298,9 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Floating communication panel — available on all pages */}
+      <CommunicationPanel />
     </div>
   );
 }

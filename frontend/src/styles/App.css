@@ -135,6 +135,13 @@ a:hover { text-decoration: underline; }
   box-shadow: 0 4px 14px rgba(0,122,61,.25);
   cursor: pointer;
   flex-shrink: 0;
+  text-decoration: none;
+  transition: transform .15s, box-shadow .15s;
+}
+.nav-logo:hover {
+  transform: scale(1.06);
+  box-shadow: 0 6px 18px rgba(0,122,61,.35);
+  text-decoration: none;
 }
 
 .nav-logo svg {

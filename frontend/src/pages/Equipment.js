@@ -1,10 +1,10 @@
 /**
- * Equipment — paginated list with status badges and health bars.
+ * Equipment — paginated registry with health bars, dynamic RUL, and predictive insights.
  * Dark-themed using CSS variable palette.
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Equipment as EqApi } from '../services/api';
+import { Equipment as EqApi, Predictions } from '../services/api';
 
 /* Status → badge class mapping */
 const statusClass = (s) => {
@@ -25,20 +25,59 @@ const healthColor = (v) => {
   return 'var(--red)';
 };
 
-export default function Equipment() {
-  const [items, setItems] = useState([]);
-  const [error, setError] = useState('');
-  const [filter, setFilter] = useState('');
+/** Format RUL hours into a human-readable string */
+function formatRul(rulHours) {
+  if (rulHours == null || isNaN(rulHours)) return '—';
+  const h = Number(rulHours);
+  if (h < 1) return '< 1 h';
+  if (h < 48) return `${Math.round(h)} h`;
+  const days = Math.floor(h / 24);
+  if (days < 60) return `${days} days`;
+  const months = Math.floor(days / 30);
+  const remDays = days % 30;
+  return remDays > 0 ? `${months} mo ${remDays} d` : `${months} months`;
+}
 
+/** RUL color based on remaining life */
+const rulColor = (h) => {
+  if (h == null || isNaN(h)) return 'var(--tm)';
+  if (h < 168)  return 'var(--red)';     // < 1 week — critical
+  if (h < 720)  return 'var(--yellow)';  // < 1 month — warning
+  return 'var(--g)';                      // > 1 month — ok
+};
+
+export default function EquipmentPage() {
+  const [items, setItems]   = useState([]);
+  const [rulMap, setRulMap] = useState({});
+  const [error, setError]   = useState('');
+  const [filter, setFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  /* Load equipment list */
   useEffect(() => {
     EqApi.list()
-      .then((d) => setItems(d.items || d))
-      .catch((e) => setError(e.response?.data?.message || 'Failed to load'));
+      .then((d) => {
+        const list = d.items || d;
+        setItems(list);
+        setLoading(false);
+        // Fetch RUL for each equipment in the background
+        list.forEach(eq => {
+          Predictions.rul(eq.id)
+            .then(r => {
+              if (r) setRulMap(prev => ({ ...prev, [eq.id]: r }));
+            })
+            .catch(() => {}); // silently skip if ML offline
+        });
+      })
+      .catch((e) => {
+        setError(e.response?.data?.message || 'Failed to load equipment');
+        setLoading(false);
+      });
   }, []);
 
   const visible = items.filter(i =>
     !filter ||
-    i.tag.toLowerCase().includes(filter.toLowerCase()) ||
+    (i.tag || '').toLowerCase().includes(filter.toLowerCase()) ||
     (i.name || '').toLowerCase().includes(filter.toLowerCase())
   );
 
@@ -48,17 +87,30 @@ export default function Equipment() {
     return acc;
   }, {});
 
+  /* Health distribution for summary */
+  const healthBuckets = { good: 0, warn: 0, critical: 0 };
+  items.forEach(e => {
+    const h = Number(e.health_score) || 0;
+    if (h >= 70) healthBuckets.good++;
+    else if (h >= 40) healthBuckets.warn++;
+    else healthBuckets.critical++;
+  });
+
   return (
     <div>
       {/* Page head */}
       <div className="page-head">
         <div>
-          <h2>Equipment</h2>
+          <h2>Equipment Registry</h2>
           <div style={{ fontSize: 11.5, color: 'var(--tm)', marginTop: 2 }}>
-            {items.length} equipment units ·
+            {items.length} units ·
             <span style={{ color: 'var(--g)', marginLeft: 6 }}>{counts.running || 0} running</span>
             {counts.fault > 0 && <span style={{ color: 'var(--red)', marginLeft: 6 }}>{counts.fault} fault</span>}
             {counts.maintenance > 0 && <span style={{ color: 'var(--yellow)', marginLeft: 6 }}>{counts.maintenance} maintenance</span>}
+            <span style={{ marginLeft: 10, color: 'var(--tm)' }}>·</span>
+            <span style={{ color: 'var(--g)', marginLeft: 6 }}>{healthBuckets.good} healthy</span>
+            {healthBuckets.warn > 0 && <span style={{ color: 'var(--yellow)', marginLeft: 6 }}>{healthBuckets.warn} at-risk</span>}
+            {healthBuckets.critical > 0 && <span style={{ color: 'var(--red)', marginLeft: 6 }}>{healthBuckets.critical} critical</span>}
           </div>
         </div>
         <input
@@ -87,12 +139,15 @@ export default function Equipment() {
                 <th>Type</th>
                 <th>Status</th>
                 <th>Health</th>
+                <th>RUL Est.</th>
                 <th style={{ textAlign: 'right' }}>Detail</th>
               </tr>
             </thead>
             <tbody>
               {visible.map(e => {
                 const h = Number(e.health_score) || 0;
+                const rul = rulMap[e.id];
+                const rulHours = rul?.rul_hours;
                 return (
                   <tr key={e.id}>
                     <td>
@@ -106,6 +161,23 @@ export default function Equipment() {
                     </td>
                     <td>
                       <HealthBar value={h} />
+                    </td>
+                    <td>
+                      <span style={{
+                        fontSize: 11.5,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontWeight: 600,
+                        color: rulColor(rulHours),
+                      }}>
+                        {rul ? formatRul(rulHours) : <span style={{ color: 'var(--td)', fontWeight: 400 }}>loading…</span>}
+                      </span>
+                      {rul?.recommendation && (
+                        <div style={{ fontSize: 10, color: 'var(--td)', maxWidth: 160, lineHeight: 1.3, marginTop: 2 }}>
+                          {rul.recommendation.length > 50
+                            ? rul.recommendation.slice(0, 48) + '…'
+                            : rul.recommendation}
+                        </div>
+                      )}
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       <Link
@@ -131,8 +203,8 @@ export default function Equipment() {
               })}
               {!visible.length && (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: 'center', padding: 28, color: 'var(--tm)', fontSize: 13 }}>
-                    {filter ? 'No equipment matches your filter.' : '⏳ Loading equipment list…'}
+                  <td colSpan="8" style={{ textAlign: 'center', padding: 28, color: 'var(--tm)', fontSize: 13 }}>
+                    {loading ? '⏳ Loading equipment list…' : filter ? 'No equipment matches your filter.' : 'No equipment found.'}
                   </td>
                 </tr>
               )}
@@ -159,7 +231,7 @@ function HealthBar({ value }) {
         fontWeight: 600,
         minWidth: 28,
       }}>
-        {v.toFixed(0)}
+        {v.toFixed(0)}%
       </span>
     </div>
   );

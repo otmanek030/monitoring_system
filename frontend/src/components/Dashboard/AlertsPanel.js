@@ -70,9 +70,9 @@ export default function AlertsPanel({ alarms = [], onRefresh }) {
 
       {/* Table */}
       {alarms.length > 0 && (
-        <div className="tbl-wrap">
+        <div className="tbl-wrap" style={{ maxHeight: 380, overflowY: 'auto' }}>
           <table className="tbl">
-            <thead>
+            <thead style={{ position: 'sticky', top: 0, background: 'var(--panel)', zIndex: 2 }}>
               <tr>
                 <th>Severity</th>
                 <th>Tag</th>
@@ -83,7 +83,7 @@ export default function AlertsPanel({ alarms = [], onRefresh }) {
               </tr>
             </thead>
             <tbody>
-              {alarms.slice(0, 20).map(a => {
+              {alarms.map(a => {
                 const s = sevStyle(a.severity);
                 return (
                   <tr key={a.id} style={{ background: s.bg, borderLeft: `3px solid ${sevBorder(a.severity)}` }}>
