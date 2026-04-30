@@ -43,7 +43,11 @@ export const Equipment = {
   get:    (id)       => api.get(`/equipment/${id}`).then(r => r.data),
   sensors:(id)       => api.get(`/equipment/${id}/sensors`).then(r => r.data),
   health: ()         => api.get('/equipment/health').then(r => r.data),
-  setStatus: (id, status) => api.patch(`/equipment/${id}/status`, { status }).then(r => r.data),
+  setStatus: (id, status)  => api.patch(`/equipment/${id}/status`, { status }).then(r => r.data),
+  /** Assign / unassign the user responsible for this equipment. Pass null
+      to clear. Critical alarms will DM whoever is set here. */
+  setResponsible: (id, user_id) =>
+    api.patch(`/equipment/${id}/responsible`, { user_id }).then(r => r.data),
 };
 
 export const Sensors = {
@@ -58,6 +62,7 @@ export const Sensors = {
 
 export const Alarms = {
   list:  (params)    => api.get('/alarms', { params }).then(r => r.data),
+  get:   (id)        => api.get(`/alarms/${id}`).then(r => r.data),
   stats: ()          => api.get('/alarms/stats').then(r => r.data),
   ack:   (id)        => api.post(`/alarms/${id}/ack`).then(r => r.data),
   clear: (id)        => api.post(`/alarms/${id}/clear`).then(r => r.data),
@@ -93,11 +98,23 @@ export const Notes = {
 };
 
 export const Users = {
-  list:   ()              => api.get('/users').then(r => r.data),
-  create: (u)             => api.post('/users', u).then(r => r.data),
-  active: (id, is_active) => api.patch(`/users/${id}/active`, { is_active }).then(r => r.data),
-  role:   (id, role)      => api.patch(`/users/${id}/role`, { role }).then(r => r.data),
-  remove: (id)            => api.delete(`/users/${id}`).then(r => r.data),
+  list:      ()              => api.get('/users').then(r => r.data),
+  /** Lightweight active-user directory — accessible to ANY authenticated role.
+      Used by the Communication panel and the equipment-responsible picker. */
+  directory: ()              => api.get('/users/directory').then(r => r.data),
+  create:    (u)             => api.post('/users', u).then(r => r.data),
+  active:    (id, is_active) => api.patch(`/users/${id}/active`, { is_active }).then(r => r.data),
+  role:      (id, role)      => api.patch(`/users/${id}/role`, { role }).then(r => r.data),
+  remove:    (id)            => api.delete(`/users/${id}`).then(r => r.data),
+};
+
+export const Messages = {
+  threads: ()         => api.get('/messages/threads').then(r => r.data),
+  unread:  ()         => api.get('/messages/unread').then(r => r.data),
+  list:    (params)   => api.get('/messages', { params }).then(r => r.data),
+  thread:  (peerId)   => api.get('/messages', { params: { with: peerId } }).then(r => r.data),
+  send:    (data)     => api.post('/messages', data).then(r => r.data),
+  markRead:(peerId)   => api.patch('/messages/read', { peer_user_id: peerId }).then(r => r.data),
 };
 
 export const Reports = {

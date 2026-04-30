@@ -26,12 +26,29 @@ function decorateAlarm(a) {
     a.cleared_ts     ? 'cleared' :
     a.acknowledged   ? 'acknowledged' :
                        'active';
+  // The detail panel expects more fields than the raw SQL row carries.
+  // We compute them here so the frontend doesn't have to:
+  //   - rule_name        : derived from the alarm definition (state_to)
+  //   - threshold_value  : the alarm definition threshold
+  //   - sensor_value     : the value that triggered the alarm
+  //   - acknowledged_by  : username of the acker (joined from users)
+  //   - cleared_by       : not currently tracked → null for now
+  //   - notes            : not currently tracked → null
   return {
     ...a,
-    id:        a.id        ?? a.alarm_id,
+    id:               a.id ?? a.alarm_id,
     status,
-    opened_at: a.opened_at ?? a.ts,
-    closed_at: a.closed_at ?? a.cleared_ts,
+    opened_at:        a.opened_at ?? a.ts,
+    closed_at:        a.closed_at ?? a.cleared_ts,
+    rule_name:        a.rule_name
+                       || (a.state_to
+                           ? `${a.state_from || 'NORMAL'} → ${a.state_to}`
+                           : null),
+    threshold_value:  a.threshold_value ?? a.threshold ?? null,
+    sensor_value:     a.sensor_value    ?? a.trigger_value ?? null,
+    acknowledged_by:  a.acknowledged_by ?? a.acknowledged_by_username ?? null,
+    cleared_by:       a.cleared_by      ?? null,
+    notes:            a.notes           ?? null,
   };
 }
 
@@ -63,12 +80,15 @@ const list = asyncHandler(async (req, res) => {
             a.trigger_value, a.state_from, a.state_to,
             a.acknowledged, a.acknowledged_at, a.equipment_id, a.sensor_id,
             e.tag_code AS equipment_tag, e.name AS equipment_name,
-            s.tag_code AS sensor_tag, s.unit AS sensor_unit,
-            u.username AS acknowledged_by_username
+            s.tag_code AS sensor_tag, s.unit AS sensor_unit, s.measurement,
+            u.username AS acknowledged_by_username,
+            ad.threshold AS threshold_value, ad.code AS rule_code,
+            ad.message_en AS rule_message_en
      FROM alarms a
      JOIN equipment e  ON e.equipment_id = a.equipment_id
      LEFT JOIN sensors s ON s.sensor_id = a.sensor_id
      LEFT JOIN users u   ON u.user_id  = a.acknowledged_by
+     LEFT JOIN alarm_definitions ad ON ad.alarm_def_id = a.alarm_def_id
      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
      ORDER BY a.ts DESC
      LIMIT $${params.length}`,
@@ -76,6 +96,33 @@ const list = asyncHandler(async (req, res) => {
   );
   const items = rows.map(decorateAlarm);
   res.json({ items, count: items.length });
+});
+
+/* ───── Single alarm — full detail (used by /alarms/:id deep-link) ───── */
+const getOne = asyncHandler(async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) throw new ApiError(400, 'Invalid alarm id');
+  const { rows } = await query(
+    `SELECT a.alarm_id, a.ts, a.cleared_ts, a.severity, a.priority, a.message,
+            a.trigger_value, a.state_from, a.state_to,
+            a.acknowledged, a.acknowledged_at, a.equipment_id, a.sensor_id,
+            e.tag_code AS equipment_tag, e.name AS equipment_name,
+            s.tag_code AS sensor_tag, s.name AS sensor_name,
+            s.unit AS sensor_unit, s.measurement,
+            u.username AS acknowledged_by_username,
+            ad.threshold AS threshold_value, ad.code AS rule_code,
+            ad.message_en AS rule_message_en, ad.condition_type
+     FROM alarms a
+     JOIN equipment e  ON e.equipment_id = a.equipment_id
+     LEFT JOIN sensors s ON s.sensor_id = a.sensor_id
+     LEFT JOIN users u   ON u.user_id  = a.acknowledged_by
+     LEFT JOIN alarm_definitions ad ON ad.alarm_def_id = a.alarm_def_id
+     WHERE a.alarm_id = $1
+     LIMIT 1`,
+    [id]
+  );
+  if (!rows[0]) throw new ApiError(404, 'Alarm not found');
+  res.json(decorateAlarm(rows[0]));
 });
 
 const stats = asyncHandler(async (_req, res) => {
@@ -140,4 +187,4 @@ const clear = asyncHandler(async (req, res) => {
   res.json(decorateAlarm(rows[0]));
 });
 
-module.exports = { list, stats, ack, clear };
+module.exports = { list, getOne, stats, ack, clear };

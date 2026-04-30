@@ -19,7 +19,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Equipment as EqApi, Predictions, Alarms, Sensors, Reports } from '../services/api';
+import { Equipment as EqApi, Predictions, Alarms, Sensors, Reports, Users } from '../services/api';
 import { useLiveFeed } from '../services/websocket';
 import SensorChart    from '../components/Charts/SensorChart';
 import TimeRangePicker, { getRangeParams } from '../components/Charts/TimeRangePicker';
@@ -234,6 +234,14 @@ export default function EquipmentDetail() {
         <InfoBox label="Expected life" value={`${Number(equipment.expected_life_hours || 0).toLocaleString()} h`} />
       </div>
 
+      {/* ── Responsible-user picker (drives critical-alarm DM routing) ── */}
+      <ResponsibleUserPicker
+        equipment={equipment}
+        canEdit={can('equipment', 'w')}
+        onChange={(updated) => setEquipment(eq => ({ ...eq, ...updated }))}
+      />
+
+
       {/* ── Sensor charts grouped by measurement ── */}
       {sensorGroups.length === 0 && (
         <div className="panel" style={{ padding: 24, color: 'var(--tm)', textAlign: 'center' }}>
@@ -364,6 +372,83 @@ function InfoBox({ label, value }) {
     <div className="panel" style={{ padding: '12px 16px' }}>
       <div className="kpi-label" style={{ marginBottom: 4 }}>{label}</div>
       <div style={{ fontSize: 16, fontWeight: 600 }}>{value || '--'}</div>
+    </div>
+  );
+}
+
+// ─── Responsible-user picker ──────────────────────────────────────────────────
+// Lets supervisors / admins assign a user as the contact for this equipment.
+// Critical alarms automatically DM that user via the Communication panel.
+function ResponsibleUserPicker({ equipment, canEdit, onChange }) {
+  const [contacts, setContacts] = useState([]);
+  const [busy, setBusy]         = useState(false);
+  const [err, setErr]           = useState('');
+  const current = equipment.responsible_user_id;
+
+  useEffect(() => {
+    Users.directory().then(d => setContacts(d.items || [])).catch(() => setContacts([]));
+  }, []);
+
+  const change = async (newId) => {
+    setBusy(true); setErr('');
+    try {
+      const v = newId === '' ? null : Number(newId);
+      const res = await Equipment.setResponsible(equipment.id, v);
+      onChange && onChange({
+        responsible_user_id: res.responsible_user_id,
+        responsible_username: contacts.find(c => c.id === v)?.username || null,
+        responsible_full_name: contacts.find(c => c.id === v)?.full_name || null,
+        responsible_email:    contacts.find(c => c.id === v)?.email || null,
+      });
+    } catch (e) {
+      setErr(e.response?.data?.message || 'Failed to update');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="panel" style={{
+      padding: '12px 16px', marginBottom: 16,
+      borderLeft: '3px solid var(--g)',
+      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: 1, minWidth: 220 }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--tm)',
+                      letterSpacing: .5, textTransform: 'uppercase', marginBottom: 2 }}>
+          Responsible user
+        </div>
+        <div style={{ fontSize: 11.5, color: 'var(--td)' }}>
+          Receives a direct message when a critical alarm fires on this equipment.
+        </div>
+      </div>
+
+      {canEdit ? (
+        <select
+          value={current ?? ''}
+          onChange={e => change(e.target.value)}
+          disabled={busy}
+          style={{ minWidth: 240, fontSize: 12, padding: '6px 10px',
+                   border: '1px solid var(--border)', borderRadius: 6, background: '#fff' }}
+        >
+          <option value="">— unassigned (supervisors fallback) —</option>
+          {contacts.map(c => (
+            <option key={c.id} value={c.id}>
+              {c.full_name || c.username} ({c.role}) {c.email ? `· ${c.email}` : ''}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <div style={{ fontSize: 12.5, color: 'var(--tx)' }}>
+          {equipment.responsible_full_name || equipment.responsible_username || '— unassigned —'}
+          {equipment.responsible_email && (
+            <span style={{ color: 'var(--td)', marginLeft: 6, fontFamily: "'JetBrains Mono', monospace", fontSize: 11 }}>
+              ✉ {equipment.responsible_email}
+            </span>
+          )}
+        </div>
+      )}
+
+      {err && <span style={{ fontSize: 11, color: 'var(--red)' }}>{err}</span>}
+      {busy && <span style={{ fontSize: 11, color: 'var(--tm)' }}>Saving…</span>}
     </div>
   );
 }

@@ -1,21 +1,28 @@
 /**
  * Dashboard — OCP PhosWatch real-time overview.
  *
- * Layout (reference design):
+ * Layout:
  *   TOP STRIP   — 5 KPI cards
  *   ROW 1       — Equipment Health table | Live Sensor Readings bar-gauges | 2 sensor trend charts
- *   ROW 2       — 3 Grafana-style multi-series trend panels (sensor_00..02, sensor_03..05, sensor_06..08)
+ *   ROW 2       — 3 Grafana-style multi-series trend panels
  *   ROW 3       — Health Distribution pie + Predictive Analytics summary
- *   BOTTOM      — Active Alarms panel
  *
- * Sensor data: uses the CSV dataset (sensor_00..sensor_08 mapped to real equipment sensors).
- * WebSocket live feed appends new readings on top of seeded history.
+ * Live streaming:
+ *   • On mount we pick a "featured" sensor list from the backend
+ *     (via /api/equipment/health which returns sensors[]).
+ *   • For each featured sensor we ALSO fetch ~last hour of historical
+ *     readings from /api/sensors/:id/readings so charts are populated
+ *     immediately and live points append on top.
+ *   • The Socket.io 'reading' event (sensor_id, value, ts) appends to a
+ *     per-sensor ring buffer; charts refresh in <500ms.
+ *
+ * Active alarms panel was removed — it has its own dedicated /alarms page.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Equipment, Alarms, Predictions } from '../services/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Equipment, Alarms, Predictions, Sensors } from '../services/api';
 import { useLiveFeed } from '../services/websocket';
-import TimeRangePicker from '../components/Charts/TimeRangePicker';
+import TimeRangePicker, { getRangeParams, filterPointsToRange } from '../components/Charts/TimeRangePicker';
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -28,47 +35,10 @@ const C = {
   orange: '#e88a3a', red:    '#d64545', yellow: '#d4b13c',
   cyan:   '#2aa3b0', blue:   '#3e72c2', purple: '#8e62c2',
 };
+const PALETTE = [C.orange, C.blue, C.red, C.cyan, C.purple, C.green2, C.yellow, C.greenL, C.green];
 
 const AXIS_TICK = { fill: '#a8b9b0', fontSize: 9.5, fontFamily: "'JetBrains Mono', monospace" };
 const GRID_CLR  = 'rgba(0,122,61,.07)';
-
-/* ─── CSV sensor metadata (mapped from real dataset columns) ───── */
-const CSV_SENSORS = [
-  { key: 'sensor_00', label: 'Vib. Pump A',    unit: 'mm/s', lo: 1.8,  hi: 3.2,  color: C.orange },
-  { key: 'sensor_01', label: 'Press. Line 1',  unit: 'bar',  lo: 40,   hi: 55,   color: C.blue   },
-  { key: 'sensor_02', label: 'Temp. Bearing',  unit: '°C',   lo: 50,   hi: 58,   color: C.red    },
-  { key: 'sensor_03', label: 'Flow Rate',      unit: 'L/min',lo: 42,   hi: 50,   color: C.cyan   },
-  { key: 'sensor_04', label: 'Motor Load',     unit: '%',    lo: 580,  hi: 680,  color: C.purple },
-  { key: 'sensor_05', label: 'Shaft Speed',    unit: 'rpm',  lo: 70,   hi: 82,   color: C.green2 },
-  { key: 'sensor_06', label: 'Current Draw',   unit: 'A',    lo: 12,   hi: 14.5, color: C.orange },
-  { key: 'sensor_07', label: 'Inlet Temp.',    unit: '°C',   lo: 14,   hi: 17.5, color: C.blue   },
-  { key: 'sensor_08', label: 'Outlet Temp.',   unit: '°C',   lo: 14,   hi: 17,   color: C.red    },
-];
-
-/* ─── Parse CSV text → array of row objects ─────────────────────── */
-function parseCSV(text) {
-  const lines = text.trim().split('\n');
-  const headers = lines[0].split(',');
-  return lines.slice(1).map(line => {
-    const vals = line.split(',');
-    const row = {};
-    headers.forEach((h, i) => { row[h.trim()] = vals[i]?.trim() ?? ''; });
-    return row;
-  });
-}
-
-/* ─── Convert CSV rows → chart-ready { ts, value } array ─────── */
-function csvRowsToSeries(rows, key) {
-  return rows
-    .filter(r => r[key] && r[key] !== '')
-    .map(r => ({
-      ts:    new Date(r.timestamp).getTime(),
-      value: parseFloat(r[key]),
-      label: r.timestamp?.slice(11, 16) || '',
-      status: r.machine_status || 'NORMAL',
-    }))
-    .filter(r => !isNaN(r.value));
-}
 
 /* ─── Tooltip ───────────────────────────────────────────────────── */
 const ChartTooltip = ({ active, payload, label, unit = '' }) => {
@@ -94,7 +64,20 @@ const ChartTooltip = ({ active, payload, label, unit = '' }) => {
 
 /* ─── Grafana-style multi-series chart panel ────────────────────── */
 function GrafanaPanel({ title, sub, datasets = [], unit = '', height = 155 }) {
-  if (!datasets.length) return null;
+  if (!datasets.length) {
+    return (
+      <div className="panel">
+        <div className="panel-head">
+          <span className="title">{title}</span>
+          {sub && <span className="sub" style={{ fontSize: 10.5, color: 'var(--td)', marginLeft: 4 }}>{sub}</span>}
+          <span className="menu">⋯</span>
+        </div>
+        <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--td)', fontSize: 11.5 }}>
+          Waiting for data…
+        </div>
+      </div>
+    );
+  }
 
   const stats = datasets.map(ds => {
     const vals = ds.data.map(d => d.value).filter(v => v != null && !isNaN(v));
@@ -105,9 +88,13 @@ function GrafanaPanel({ title, sub, datasets = [], unit = '', height = 155 }) {
     return { label: ds.label, color: ds.color, max: fmt(max), avg: fmt(avg), cur: fmt(cur) };
   });
 
-  const allTs = [...new Set(datasets.flatMap(ds => ds.data.map(d => d.ts)))].sort();
+  // Merge time series so every dataset shares the same X-axis.
+  const allTs = [...new Set(datasets.flatMap(ds => ds.data.map(d => d.ts)))].sort((a, b) => a - b);
   const merged = allTs.map(ts => {
-    const row = { ts, label: new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) };
+    const row = {
+      ts,
+      label: new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+    };
     datasets.forEach(ds => {
       const pt = ds.data.find(d => d.ts === ts);
       row[ds.key] = pt ? pt.value : null;
@@ -165,21 +152,20 @@ function GrafanaPanel({ title, sub, datasets = [], unit = '', height = 155 }) {
   );
 }
 
-/* ─── Segmented bar gauge ───────────────────────────────────────── */
+/* ─── Segmented bar gauge — uses .bg-row CSS so it stays responsive ── */
 function BarGauge({ label, pct = 0, value, unit = '' }) {
   const clampedPct = Math.max(0, Math.min(100, pct));
   const color = clampedPct > 85 ? C.red : clampedPct > 70 ? C.orange : clampedPct > 50 ? C.yellow : C.green;
   const cls   = clampedPct > 85 ? 'red' : clampedPct > 70 ? 'orange' : clampedPct > 50 ? 'yellow' : 'green';
   return (
-    <div className="bg-row">
-      <div className="bg-label" style={{ minWidth: 90, maxWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {label}
+    <div className="bg-row" title={label}>
+      <div className="bg-label">{label}</div>
+      <div className="bg-track">
+        <div className="bg-fill" style={{ width: `${clampedPct}%`, background: color }} />
       </div>
-      <div className="bg-track" style={{ flex: 1, height: 8, background: 'var(--g-softer)', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border)' }}>
-        <div style={{ width: `${clampedPct}%`, height: '100%', background: color, borderRadius: 4, transition: 'width .4s' }} />
-      </div>
-      <div className={`bg-val ${cls}`} style={{ minWidth: 62, textAlign: 'right', fontSize: 11, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>
-        {typeof value === 'number' ? value.toFixed(2) : '--'} <span style={{ fontSize: 9.5, color: 'var(--td)', fontWeight: 400 }}>{unit}</span>
+      <div className={`bg-val ${cls}`}>
+        <span>{typeof value === 'number' ? value.toFixed(2) : '--'}</span>
+        <span style={{ fontSize: 9.5, color: 'var(--td)', fontWeight: 400 }}>{unit}</span>
       </div>
     </div>
   );
@@ -204,40 +190,65 @@ function HealthDistPanel({ equipment = [] }) {
   const worst = [...equipment].sort((a, b) => (Number(a.health_score) || 0) - (Number(b.health_score) || 0)).slice(0, 5);
 
   return (
-    <div className="panel">
+    <div className="panel" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <div className="panel-head">
         <span className="title">Health Distribution</span>
         <span style={{ fontSize: 10.5, color: 'var(--tm)', marginLeft: 4 }}>{equipment.length} assets</span>
         <span className="menu">⋯</span>
       </div>
-      <div style={{ display: 'flex', gap: 8, padding: '4px 8px 8px', flexWrap: 'wrap' }}>
-        <div style={{ flex: '0 0 auto' }}>
-          <ResponsiveContainer width={150} height={150}>
-            <PieChart>
-              <Pie data={pieData} cx="50%" cy="50%" innerRadius={38} outerRadius={60}
-                dataKey="value" isAnimationActive={false}
-                label={({ percent }) => `${Math.round(percent * 100)}%`} labelLine={false}>
-                {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % 3]} />)}
-              </Pie>
-              <Tooltip contentStyle={{ background: '#fff', border: '1px solid #ddd', borderRadius: 5, fontSize: 11 }}
-                formatter={(v, n) => [v + ' assets', n]} />
-            </PieChart>
-          </ResponsiveContainer>
+
+      {/* Pie + legend stack vertically so the component stays usable inside
+          a narrow column. Pie scales with ResponsiveContainer (width 100%). */}
+      <div style={{ padding: '4px 10px 6px', display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+        <ResponsiveContainer width="100%" height={130}>
+          <PieChart>
+            <Pie data={pieData} cx="50%" cy="50%" innerRadius={32} outerRadius={56}
+              dataKey="value" isAnimationActive={false}
+              label={({ percent }) => `${Math.round(percent * 100)}%`} labelLine={false}>
+              {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % 3]} />)}
+            </Pie>
+            <Tooltip contentStyle={{ background: '#fff', border: '1px solid #ddd', borderRadius: 5, fontSize: 11 }}
+              formatter={(v, n) => [v + ' assets', n]} />
+          </PieChart>
+        </ResponsiveContainer>
+
+        {/* Legend chips */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {pieData.map((d, i) => (
+            <span key={d.name} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              fontSize: 10, color: 'var(--tm)',
+              background: 'var(--g-softer)', border: '1px solid var(--border)',
+              padding: '1px 6px', borderRadius: 4,
+            }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: PIE_COLORS[i % 3] }} />
+              {d.name}: <strong>{d.value}</strong>
+            </span>
+          ))}
         </div>
-        <div style={{ flex: 1, minWidth: 110, paddingTop: 8 }}>
-          <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 8 }}>
+
+        {/* Attention required — top 5 worst, full-width rows */}
+        <div style={{ marginTop: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: .5, marginBottom: 5 }}>
             Attention Required
           </div>
           {worst.map(eq => {
             const h = Number(eq.health_score) || 0;
             const col = h >= 70 ? C.green : h >= 40 ? C.yellow : C.red;
             return (
-              <div key={eq.id} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6 }}>
-                <div style={{ width: 56, height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${h}%`, height: '100%', background: col, borderRadius: 3 }} />
+              <div key={eq.id} style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(60px, 1fr) 60px 36px',
+                alignItems: 'center', gap: 6, marginBottom: 4, minWidth: 0,
+              }}>
+                <code style={{
+                  fontSize: 10.5, color: 'var(--tm)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }} title={eq.tag}>{eq.tag}</code>
+                <div style={{ height: 5, background: 'var(--border)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${h}%`, height: '100%', background: col, borderRadius: 3, transition: 'width .4s' }} />
                 </div>
-                <code style={{ fontSize: 10.5, color: 'var(--tm)', minWidth: 70 }}>{eq.tag}</code>
-                <span style={{ fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace", color: col, fontWeight: 700 }}>
+                <span style={{ fontSize: 10.5, fontFamily: "'JetBrains Mono', monospace", color: col, fontWeight: 700, textAlign: 'right' }}>
                   {h.toFixed(0)}%
                 </span>
               </div>
@@ -255,94 +266,127 @@ function HealthDistPanel({ equipment = [] }) {
 export default function Dashboard() {
   /* ── API state ── */
   const [health,     setHealth]     = useState(null);
-  const [alarms,     setAlarms]     = useState([]);
   const [alarmStats, setAlarmStats] = useState(null);
   const [mlStatus,   setMlStatus]   = useState(null);
   const [error,      setError]      = useState('');
   const [range,      setRange]      = useState('1h');
   const [loading,    setLoading]    = useState(false);
 
-  /* ── CSV sensor data (loaded once at mount) ── */
-  const [csvSeries, setCsvSeries] = useState({}); // { sensor_key: [{ts,value,label}] }
-  const [csvStatus, setCsvStatus] = useState({}); // { sensor_key: latest machine_status }
+  /* ── Featured sensors (≤9 picked from backend health overview) ── */
+  const [featuredSensors, setFeaturedSensors] = useState([]);
 
-  /* ── Live feed — WebSocket streams new sensor readings ── */
-  const { readings: liveReadings, latestAlarm, connected, seedHistorical } = useLiveFeed({ bufferSize: 400 });
-  const seededRef = useRef(false);
-
-  /* ── Load CSV data for realistic sensor charts ── */
-  useEffect(() => {
-    fetch('/sensor.csv')
-      .then(r => r.ok ? r.text() : Promise.reject('CSV not found'))
-      .then(text => {
-        const rows = parseCSV(text);
-        // Use last 400 rows for performance
-        const subset = rows.slice(-400);
-        const series = {};
-        const statuses = {};
-        CSV_SENSORS.forEach(s => {
-          series[s.key] = csvRowsToSeries(subset, s.key);
-          const lastRow = subset[subset.length - 1];
-          statuses[s.key] = lastRow?.machine_status || 'NORMAL';
-        });
-        setCsvSeries(series);
-        setCsvStatus(statuses);
-        // Seed the WebSocket ring buffer with CSV history so live points append smoothly
-        if (!seededRef.current) {
-          seededRef.current = true;
-          // Map sensor keys to numeric IDs that the backend emits (sensor_00 → 0, etc.)
-          const seedData = {};
-          CSV_SENSORS.forEach((s, idx) => {
-            seedData[idx] = series[s.key].map(pt => ({ ts: pt.ts, value: pt.value }));
-          });
-          seedHistorical(seedData);
-        }
-      })
-      .catch(() => {
-        // CSV not served — generate synthetic fallback data starting from 15 Apr 2026
-        const startMs = new Date('2026-04-15T00:00:00Z').getTime();
-        const now = Date.now();
-        const intervalMs = Math.floor((now - startMs) / 120);
-        const series = {};
-        CSV_SENSORS.forEach(s => {
-          const base = (s.lo + s.hi) / 2;
-          const rng  = (s.hi - s.lo) * 0.3;
-          series[s.key] = Array.from({ length: 120 }, (_, i) => {
-            const t = startMs + i * intervalMs;
-            return {
-              ts:    t,
-              value: base + (Math.random() - 0.5) * rng,
-              label: new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-              status: 'NORMAL',
-            };
-          });
-        });
-        setCsvSeries(series);
-      });
-  }, [seedHistorical]);
+  /* ── Live feed (Socket.io) ── */
+  const { readings: liveReadings, latestAlarm, connected, seedHistorical } =
+    useLiveFeed({ bufferSize: 600 });
 
   /* ── KPI loader ── */
   const loadKPIs = useCallback(async () => {
     try {
-      const [h, a, s, m] = await Promise.all([
+      setLoading(true);
+      const [h, s, m] = await Promise.all([
         Equipment.health(),
-        Alarms.list({ status: 'active', limit: 50 }),
         Alarms.stats(),
         Predictions.mlHealth().catch(() => ({ ok: false })),
       ]);
       setHealth(h);
-      setAlarms(a.items || a);
       setAlarmStats(s);
       setMlStatus(m);
       setError('');
     } catch (e) {
       setError(e.response?.data?.message || e.message || 'Failed to load dashboard');
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => { loadKPIs(); }, [loadKPIs]);
   useEffect(() => { const t = setInterval(loadKPIs, 30_000); return () => clearInterval(t); }, [loadKPIs]);
   useEffect(() => { if (latestAlarm) loadKPIs(); }, [latestAlarm, loadKPIs]);
+
+  /* ── Pick 9 featured sensors from health.equipment[].sensors[] ── */
+  useEffect(() => {
+    if (!health?.equipment?.length) return;
+    const picked = [];
+    // Prefer one sensor per equipment so the chart panels are diverse
+    for (const eq of health.equipment) {
+      if (picked.length >= 9) break;
+      const s = eq.sensors?.[0];
+      if (s) {
+        picked.push({
+          ...s,
+          id: s.id ?? s.sensor_id,
+          equipment_tag: eq.tag,
+          equipment_id: eq.id,
+        });
+      }
+    }
+    // If still not enough, pull more sensors per equipment
+    if (picked.length < 9) {
+      for (const eq of health.equipment) {
+        for (const s of (eq.sensors || []).slice(1)) {
+          if (picked.length >= 9) break;
+          picked.push({
+            ...s,
+            id: s.id ?? s.sensor_id,
+            equipment_tag: eq.tag,
+            equipment_id: eq.id,
+          });
+        }
+      }
+    }
+    setFeaturedSensors(picked);
+  }, [health]);
+
+  /* ── Seed each featured sensor's ring buffer with REST history.
+       Window + bucket are driven by the active TimeRangePicker selection,
+       so e.g. picking "7d" replays a week's worth of 1-hour buckets. ── */
+  useEffect(() => {
+    if (!featuredSensors.length) return;
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      const params = getRangeParams(range);
+      const seed = {};
+      await Promise.all(featuredSensors.map(async (s) => {
+        try {
+          const r = await Sensors.readings(s.id, {
+            from:   params.from,
+            to:     params.to,
+            bucket: params.live ? 'raw' : params.bucket,
+            limit:  range === 'all' ? 5000 : 1500,
+          });
+          seed[s.id] = (r.points || []).map(p => ({
+            ts: new Date(p.ts || p.bucket).getTime(),
+            value: Number(p.value),
+          })).filter(p => !isNaN(p.value));
+        } catch {
+          seed[s.id] = [];
+        }
+      }));
+      if (cancelled) return;
+      seedHistorical(seed);
+      setLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [featuredSensors, range, seedHistorical]);
+
+  /* ── Build per-sensor merged series (history + live), then clamp to
+       the selected window so charts never show data outside it. ── */
+  const seriesById = useMemo(() => {
+    const out = {};
+    featuredSensors.forEach((s) => {
+      const buf = liveReadings[s.id] || [];
+      const points = buf.map(pt => ({
+        ts: typeof pt.ts === 'number' ? pt.ts : new Date(pt.ts).getTime(),
+        value: Number(pt.value),
+      })).filter(p => !isNaN(p.value));
+      out[s.id] = filterPointsToRange(points, range);
+    });
+    return out;
+  }, [featuredSensors, liveReadings, range]);
+
 
   /* ── Derived KPIs ── */
   const totalEq      = health?.equipment?.length || 0;
@@ -363,45 +407,45 @@ export default function Dashboard() {
     return { cls: 'red', bar: C.red };
   };
 
-  /* ── Bar gauges: use merged (live-updated) series ── */
-  const gaugeReadings = CSV_SENSORS.slice(0, 6).map(s => {
-    const data  = mergedSeries[s.key] || [];
-    const last  = data[data.length - 1];
-    const val   = last?.value ?? null;
-    const range = s.hi - s.lo;
-    const pct   = val != null ? Math.max(0, Math.min(100, ((val - s.lo) / range) * 100)) : 0;
-    return { label: s.label, value: val, pct, unit: s.unit };
+  /* ── Bar gauges: take the first 6 featured sensors ── */
+  const gaugeReadings = featuredSensors.slice(0, 6).map((s, i) => {
+    const data = seriesById[s.id] || [];
+    const last = data[data.length - 1];
+    const val  = last?.value ?? null;
+    const lo   = Number(s.range_min ?? s.l1 ?? 0);
+    const hi   = Number(s.range_max ?? s.h2 ?? 100);
+    const span = Math.max(0.0001, hi - lo);
+    const pct  = val != null ? Math.max(0, Math.min(100, ((val - lo) / span) * 100)) : 0;
+    return {
+      key: s.id,
+      label: s.tag || s.tag_code || s.name || `S${i}`,
+      value: val,
+      pct,
+      unit: s.unit || '',
+    };
   });
 
-  /* ── Merge CSV history + live WebSocket points for each sensor ── */
-  // liveReadings keys are numeric IDs (0,1,2...) from WebSocket events.
-  // We blend them on top of csvSeries so charts stay live after CSV is loaded.
-  const mergedSeries = {};
-  CSV_SENSORS.forEach((s, idx) => {
-    const base = csvSeries[s.key] || [];
-    const live = (liveReadings[idx] || []).map(pt => ({
-      ts:    pt.ts,
-      value: pt.value,
-      label: new Date(pt.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-      status: 'NORMAL',
-    }));
-    // Deduplicate: keep only live points newer than last CSV point
-    const lastCsvTs = base.length ? base[base.length - 1].ts : 0;
-    const freshLive = live.filter(pt => pt.ts > lastCsvTs);
-    const combined  = [...base, ...freshLive].slice(-400);
-    mergedSeries[s.key] = combined;
+  /* ── Total live points across all sensors ── */
+  const totalPoints = Object.values(seriesById).reduce((sum, arr) => sum + arr.length, 0);
+
+  /* ── Build datasets for the panels ── */
+  const buildDatasets = (sensors) => sensors.map((s, i) => {
+    const data = seriesById[s.id] || [];
+    return {
+      key:   `s${s.id}`,
+      label: s.tag || s.name || `Sensor ${s.id}`,
+      color: PALETTE[i % PALETTE.length],
+      data,
+    };
   });
 
-  /* ── Build Grafana panels: 3 groups of 3 sensors ── */
+  const panel1 = featuredSensors.slice(0, 2);
+  const panel2 = featuredSensors.slice(2, 4);
   const panelGroups = [
-    { title: 'Vibration & Pressure', sub: 'sensor_00..02', sensors: CSV_SENSORS.slice(0, 3) },
-    { title: 'Flow, Load & Speed',   sub: 'sensor_03..05', sensors: CSV_SENSORS.slice(3, 6) },
-    { title: 'Current & Temperature',sub: 'sensor_06..08', sensors: CSV_SENSORS.slice(6, 9) },
-  ];
-
-  /* ── CSV data summary for predictive panel ── */
-  const brokenCount    = Object.values(csvStatus).filter(s => s === 'BROKEN').length;
-  const recoveringCount = Object.values(csvStatus).filter(s => s === 'RECOVERING').length;
+    { title: 'Group 1', sub: 'sensors 1-3',  sensors: featuredSensors.slice(0, 3) },
+    { title: 'Group 2', sub: 'sensors 4-6',  sensors: featuredSensors.slice(3, 6) },
+    { title: 'Group 3', sub: 'sensors 7-9',  sensors: featuredSensors.slice(6, 9) },
+  ].filter(g => g.sensors.length > 0);
 
   /* ─── Render ──────────────────────────────────────────────────── */
   return (
@@ -409,17 +453,22 @@ export default function Dashboard() {
 
       {/* Connection status + time range */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <span className={`sdot${connected ? '' : ' warn'}`} />
           <span style={{ fontSize: 12, color: 'var(--tm)' }}>
             {connected ? 'WebSocket live' : 'Reconnecting…'}
           </span>
           {loading && <span style={{ fontSize: 11, color: 'var(--td)' }}>Loading…</span>}
-          {Object.keys(mergedSeries).length > 0 && (
-            <span style={{ fontSize: 11, color: 'var(--td)', background: 'var(--g-softer)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: 4 }}>
-              {connected ? '🟢 Live' : '⚪ Historical'} · {Object.values(mergedSeries).reduce((s, d) => s + d.length, 0).toLocaleString()} pts
-            </span>
-          )}
+          <span style={{ fontSize: 11, color: 'var(--td)', background: 'var(--g-softer)', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: 4 }}>
+            {connected ? '🟢 Live' : '⚪ Offline'} · {totalPoints.toLocaleString()} pts · {featuredSensors.length} sensors
+          </span>
+          {/* Active window indicator */}
+          <span style={{ fontSize: 11, color: 'var(--tm)', background: '#fff', border: '1px solid var(--border)', padding: '2px 8px', borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}>
+            {(() => {
+              const p = getRangeParams(range);
+              return `${new Date(p.from).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })} → ${new Date(p.to).toLocaleString('en-GB', { hour:'2-digit', minute:'2-digit' })}`;
+            })()}
+          </span>
         </div>
         <TimeRangePicker value={range} onChange={setRange} disabled={loading} />
       </div>
@@ -431,7 +480,7 @@ export default function Dashboard() {
       )}
 
       {/* ══════════════════════════════════════════════════════════
-          TOP STRIP — 5 KPI cards
+          TOP STRIP — 5 KPI cards (Active Alarms removed; see /alarms)
       ══════════════════════════════════════════════════════════ */}
       <div className="summary-strip">
 
@@ -448,23 +497,6 @@ export default function Dashboard() {
             <div className="sum-val">{running}<span className="sum-val-unit"> / {totalEq}</span></div>
             <div className={`sum-sub ${running === totalEq && totalEq > 0 ? 'ok' : running > 0 ? 'warn' : 'up'}`}>
               {running === totalEq && totalEq > 0 ? '✓ All running' : `${totalEq - running} offline`}
-            </div>
-          </div>
-        </div>
-
-        {/* Active Alarms */}
-        <div className="sum-card">
-          <div className={`sum-ico ${critAlarms > 0 ? 'r' : activeAlarms > 0 ? 'o' : 'g'}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-              <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-              <path d="M13.73 21a2 2 0 01-3.46 0"/>
-            </svg>
-          </div>
-          <div>
-            <div className="sum-lbl">Active Alarms</div>
-            <div className="sum-val">{activeAlarms}</div>
-            <div className={`sum-sub ${critAlarms > 0 ? 'up' : activeAlarms > 0 ? 'warn' : 'ok'}`}>
-              {activeAlarms === 0 ? '✓ All clear' : `${critAlarms} critical · ${warnAlarms} warn`}
             </div>
           </div>
         </div>
@@ -503,7 +535,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Sensor Dataset */}
+        {/* Sensor count */}
         <div className="sum-card">
           <div className="sum-ico c">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
@@ -511,19 +543,41 @@ export default function Dashboard() {
             </svg>
           </div>
           <div>
-            <div className="sum-lbl">Sensor Dataset</div>
-            <div className="sum-val">{totalSensors || CSV_SENSORS.length}</div>
+            <div className="sum-lbl">Active Sensors</div>
+            <div className="sum-val">{totalSensors}</div>
             <div className="sum-sub ok">
-              {brokenCount > 0 ? `${brokenCount} broken` : recoveringCount > 0 ? `${recoveringCount} recovering` : '✓ All normal'}
+              streaming live
+            </div>
+          </div>
+        </div>
+
+        {/* Live data points */}
+        <div className="sum-card">
+          <div className={`sum-ico ${connected ? 'b' : 'o'}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M3 12h4l3-9 4 18 3-9h4"/>
+            </svg>
+          </div>
+          <div>
+            <div className="sum-lbl">Live Data Points</div>
+            <div className="sum-val">{totalPoints.toLocaleString()}</div>
+            <div className={`sum-sub ${connected ? 'ok' : 'warn'}`}>
+              {connected ? '✓ Streaming' : '⚠ Offline'}
             </div>
           </div>
         </div>
       </div>
 
       {/* ══════════════════════════════════════════════════════════
-          ROW 1 — Equipment Health | Bar Gauges | 2 Sensor Charts
+          ROW 1 — Equipment Health | Live Sensor Readings |
+                   Health Distribution | Live Trend
+          Wraps to 2×2 below 1100 px, single column below 720 px.
       ══════════════════════════════════════════════════════════ */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px 1fr 1fr', gap: 12, minHeight: 240 }}>
+      <div className="dashboard-row-1" style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+        gap: 12, minHeight: 260,
+      }}>
 
         {/* Equipment Health Table */}
         <div className="panel">
@@ -583,50 +637,35 @@ export default function Dashboard() {
             <span className="menu">⋯</span>
           </div>
           <div className="panel-body" style={{ padding: '8px 10px', gap: 6, flex: 1 }}>
-            {gaugeReadings.map((r, i) => (
-              <BarGauge key={i} label={r.label} pct={r.pct} value={r.value} unit={r.unit} />
+            {gaugeReadings.length === 0 ? (
+              <div style={{ color: 'var(--td)', fontSize: 11.5, padding: 8 }}>Waiting for sensor data…</div>
+            ) : gaugeReadings.map((r) => (
+              <BarGauge key={r.key} label={r.label} pct={r.pct} value={r.value} unit={r.unit} />
             ))}
           </div>
         </div>
 
-        {/* Sensor Chart — Vibration & Pressure (live) */}
-        <GrafanaPanel
-          title="Vib. & Pressure"
-          sub="mm/s · bar"
-          unit=""
-          height={160}
-          datasets={CSV_SENSORS.slice(0, 2).map(s => ({
-            key:   s.key,
-            label: s.label,
-            color: s.color,
-            data:  mergedSeries[s.key] || [],
-          }))}
-        />
+        {/* Health Distribution — moved here so it's next to Live Sensor Readings */}
+        <HealthDistPanel equipment={health?.equipment || []} />
 
-        {/* Sensor Chart — Temperature (live) */}
+        {/* Live Trend — first two sensors */}
         <GrafanaPanel
-          title="Temperature Sensors"
-          sub="°C"
-          unit="°C"
-          height={160}
-          datasets={CSV_SENSORS.slice(2, 4).map(s => ({
-            key:   s.key,
-            label: s.label,
-            color: s.color,
-            data:  mergedSeries[s.key] || [],
-          }))}
+          title="Live Trend"
+          sub={panel1.map(s => s.tag).join(' · ')}
+          height={170}
+          datasets={buildDatasets(panel1)}
         />
       </div>
 
       {/* ══════════════════════════════════════════════════════════
-          ROW 2 — 3 Grafana trend panels (groups of 3 sensors)
+          ROW 2 — 3 Grafana trend panels
       ══════════════════════════════════════════════════════════ */}
       <div style={{
         fontSize: 10.5, fontWeight: 700, color: 'var(--tm)',
         letterSpacing: '.6px', textTransform: 'uppercase',
         borderLeft: '3px solid var(--g)', paddingLeft: 10,
       }}>
-        Sensor Trends — Live · {Object.values(mergedSeries).reduce((s, d) => s + d.length, 0).toLocaleString()} data points
+        Sensor Trends — Live · {totalPoints.toLocaleString()} data points · updates &lt;500ms
       </div>
 
       <div className="grid-3">
@@ -634,23 +673,25 @@ export default function Dashboard() {
           <GrafanaPanel
             key={gi}
             title={pg.title}
-            sub={pg.sub}
-            height={145}
-            datasets={pg.sensors.map(s => ({
-              key:   s.key,
-              label: s.label,
-              color: s.color,
-              data:  mergedSeries[s.key] || [],
-            }))}
+            sub={pg.sensors.map(s => s.tag).join(' · ')}
+            height={120}                       /* compact, matches Live Trend */
+            datasets={buildDatasets(pg.sensors)}
           />
         ))}
       </div>
 
       {/* ══════════════════════════════════════════════════════════
-          ROW 3 — Health Distribution + Predictive Analytics
+          ROW 3 — Live Trend (Group B) + Predictive Analytics
+          (Health Distribution moved to ROW 1; Active Alarms panel
+           removed - see dedicated /alarms page)
       ══════════════════════════════════════════════════════════ */}
       <div className="grid-2">
-        <HealthDistPanel equipment={health?.equipment || []} />
+        <GrafanaPanel
+          title="Live Trend — Group B"
+          sub={panel2.map(s => s.tag).join(' · ')}
+          height={180}
+          datasets={buildDatasets(panel2)}
+        />
 
         {/* Predictive Analytics summary */}
         <div className="panel">
@@ -696,12 +737,11 @@ export default function Dashboard() {
                   </AreaChart>
                 </ResponsiveContainer>
 
-                {/* CSV machine status summary */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 4 }}>
                   {[
-                    { label: 'Avg Health',   value: `${avgHealth}%`,         color: Number(avgHealth) >= 70 ? C.green : C.yellow },
-                    { label: 'Machine State',value: brokenCount > 0 ? `${brokenCount} BROKEN` : recoveringCount > 0 ? `${recoveringCount} RECOV.` : 'NORMAL', color: brokenCount > 0 ? C.red : recoveringCount > 0 ? C.orange : C.green },
-                    { label: 'Active Alarms',value: activeAlarms,             color: activeAlarms === 0 ? C.green : critAlarms > 0 ? C.red : C.yellow },
+                    { label: 'Avg Health',     value: `${avgHealth}%`, color: Number(avgHealth) >= 70 ? C.green : C.yellow },
+                    { label: 'Critical Alarms',value: critAlarms,      color: critAlarms > 0 ? C.red : C.green },
+                    { label: 'Warnings',       value: warnAlarms,      color: warnAlarms > 0 ? C.yellow : C.green },
                   ].map(s => (
                     <div key={s.label} style={{
                       background: 'var(--g-softer)', borderRadius: 6, padding: '8px 10px',

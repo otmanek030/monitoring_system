@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Notes as NotesApi, Equipment, Reports } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import TableSearch from '../components/TableSearch';
 
 const CATEGORIES = [
   { value: 'observation', label: 'Observation', icon: '👁' },
@@ -141,11 +142,13 @@ export default function Notes() {
       {/* ── Filters ── */}
       <div className="panel" style={{ marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '10px 14px', alignItems: 'center' }}>
-          <input
-            placeholder="Search notes…"
+          <TableSearch
             value={search}
-            onChange={e => setSearch(e.target.value)}
-            style={{ width: 200 }}
+            onChange={setSearch}
+            total={items.length}
+            shown={visible.length}
+            placeholder="Search notes by title, body, author…"
+            width={260}
           />
           <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>Shift</span>
@@ -173,9 +176,6 @@ export default function Notes() {
               onChange={e => setFilter(f => ({ ...f, mine: e.target.checked }))} />
             <span style={{ fontSize: 11.5 }}>My notes only</span>
           </label>
-          <span style={{ marginLeft: 'auto', fontSize: 11.5, color: 'var(--td)' }}>
-            {visible.length} of {items.length} shown
-          </span>
         </div>
       </div>
 

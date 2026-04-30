@@ -4,11 +4,16 @@
  */
 import { useEffect, useState } from 'react';
 import { Users as UsersApi } from '../services/api';
+import TableSearch, { useTableSearch, NoResultsRow } from '../components/TableSearch';
 
 export default function Users() {
   const [items, setItems] = useState([]);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const visible = useTableSearch(items, search, [
+    'username', 'full_name', 'email', 'role',
+  ]);
 
   const load = () => {
     UsersApi.list()
@@ -38,7 +43,16 @@ export default function Users() {
     <div>
       <div className="page-head">
         <h2>Users & permissions</h2>
-        <button className="primary" onClick={() => setShowNew(true)}>+ Add user</button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TableSearch
+            value={search}
+            onChange={setSearch}
+            total={items.length}
+            shown={visible.length}
+            placeholder="Search username, name, email…"
+          />
+          <button className="primary" onClick={() => setShowNew(true)}>+ Add user</button>
+        </div>
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -52,7 +66,11 @@ export default function Users() {
             </tr>
           </thead>
           <tbody>
-            {items.map(u => (
+            {!visible.length && (
+              <NoResultsRow colSpan={7} query={search}
+                message={!items.length ? 'No users yet.' : undefined} />
+            )}
+            {visible.map(u => (
               <tr key={u.id}>
                 <td>
                   <code>{u.username}</code>

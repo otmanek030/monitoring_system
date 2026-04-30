@@ -51,6 +51,7 @@ export default function App() {
           <Route path="equipment"      element={<Equipment />} />
           <Route path="equipment/:id"  element={<EquipmentDetail />} />
           <Route path="alarms"         element={<Alarms />} />
+          <Route path="alarms/:id"     element={<Alarms />} />   {/* deep-link to detail */}
           <Route path="predictions"    element={<Predictions />} />
           <Route path="maintenance"    element={<Maintenance />} />
           <Route path="reports"        element={<Reports />} />

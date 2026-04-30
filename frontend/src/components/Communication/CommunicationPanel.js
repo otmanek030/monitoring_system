@@ -1,125 +1,114 @@
 /**
  * CommunicationPanel — floating messaging widget.
  *
- * Any role can contact any other role:
- *   Admin ↔ Supervisor, Technician, Operator  (and vice versa)
+ * Backed by the /api/messages endpoints (DB-persisted) instead of
+ * localStorage so:
+ *   • messages survive logout / browser switch
+ *   • the alarm-notifier can post on a user's behalf when they're offline
+ *   • every authenticated role can DM every other authenticated user
  *
- * Messages are stored in localStorage (cross-tab simulation).
- * In production, this would use WebSocket message rooms.
+ * The contact dropdown comes from /api/users/directory (auth-only, any
+ * role) and lists every active user with their role + email visible so
+ * the sender knows who they're contacting.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Users as UsersApi } from '../../services/api';
+import { Users as UsersApi, Messages as MsgApi } from '../../services/api';
 
-const STORAGE_KEY = 'phoswatch.messages.v2';
-
-function loadMessages() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
-  catch { return []; }
-}
-function saveMessages(msgs) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(msgs.slice(-300))); }
-  catch {}
-}
-
-/* Role badge colors */
 const ROLE_COLORS = {
   admin:      { bg: '#102818', text: '#8fc96f' },
   supervisor: { bg: '#1a4d2e', text: '#4CAF50' },
   technician: { bg: '#1e3a28', text: '#66BB6A' },
   operator:   { bg: '#2e5c3a', text: '#A5D6A7' },
+  viewer:     { bg: '#3a4f43', text: '#cfe2c8' },
 };
-
-const roleOrder = ['admin', 'supervisor', 'technician', 'operator'];
+const roleOrder = ['admin', 'supervisor', 'technician', 'operator', 'viewer'];
 
 export default function CommunicationPanel() {
   const { user } = useAuth();
   const [open,      setOpen]      = useState(false);
-  const [messages,  setMessages]  = useState(loadMessages);
+  const [thread,    setThread]    = useState([]);          // current conversation
+  const [inbox,     setInbox]     = useState([]);          // raw inbox list
   const [text,      setText]      = useState('');
   const [recipient, setRecipient] = useState('');
   const [contacts,  setContacts]  = useState([]);
   const [unread,    setUnread]    = useState(0);
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'inbox'
+  const [activeTab, setActiveTab] = useState('chat');      // 'chat' | 'inbox'
+  const [busy,      setBusy]      = useState(false);
+  const [err,       setErr]       = useState('');
   const bottomRef = useRef(null);
 
-  /* Poll localStorage for new messages */
-  useEffect(() => {
-    const tick = () => {
-      const fresh = loadMessages();
-      setMessages(fresh);
-      if (!open) {
-        const myInbox = fresh.filter(m => m.to === user?.id);
-        setUnread(myInbox.filter(m => !m.read).length);
-      }
-    };
-    const t = setInterval(tick, 1500);
-    return () => clearInterval(t);
-  }, [open, user]);
-
-  /* Load ALL other users regardless of role */
+  /* ── Load contact directory (every active user, any role) ── */
   useEffect(() => {
     if (!user) return;
-    UsersApi.list()
+    UsersApi.directory()
       .then(d => {
-        const all = d.items || d.users || d || [];
-        const others = all.filter(u => u.is_active && u.id !== user.id);
-        setContacts(others);
-        if (others.length && !recipient) setRecipient(String(others[0].id));
+        const items = (d.items || []).filter(u => u.id !== user.id);
+        setContacts(items);
+        if (items.length && !recipient) setRecipient(String(items[0].id));
       })
-      .catch(() => {});
+      .catch(() => setContacts([]));
   }, [user]); // eslint-disable-line
 
-  /* Scroll + mark read on open */
+  /* ── Poll inbox + unread count every 4 s ── */
   useEffect(() => {
-    if (open) {
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 80);
-      const updated = loadMessages().map(m =>
-        m.to === user?.id ? { ...m, read: true } : m
-      );
-      saveMessages(updated);
-      setMessages(updated);
-      setUnread(0);
-    }
-  }, [open, user]);
-
-  const send = () => {
-    if (!text.trim() || !recipient) return;
-    const target = contacts.find(c => String(c.id) === String(recipient));
-    const msg = {
-      id:       Date.now(),
-      from:     user?.id,
-      fromName: user?.username || user?.fullName || 'User',
-      fromRole: user?.role,
-      to:       target?.id,
-      toName:   target?.username || target?.full_name || '?',
-      toRole:   target?.role,
-      body:     text.trim(),
-      ts:       new Date().toISOString(),
-      read:     false,
+    if (!user) return;
+    const tick = async () => {
+      try {
+        const [inboxData, unreadData] = await Promise.all([
+          MsgApi.list(),
+          MsgApi.unread(),
+        ]);
+        setInbox(inboxData.items || []);
+        setUnread(unreadData.count || 0);
+      } catch { /* silent — keep retrying */ }
     };
-    const updated = [...loadMessages(), msg];
-    saveMessages(updated);
-    setMessages(updated);
-    setText('');
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => clearInterval(t);
+  }, [user]);
+
+  /* ── Load conversation when recipient or open state changes ── */
+  useEffect(() => {
+    if (!open || !recipient || activeTab !== 'chat') return;
+    let cancel = false;
+    MsgApi.thread(recipient).then(d => {
+      if (cancel) return;
+      setThread(d.items || []);
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    }).catch(() => setThread([]));
+    // Mark this peer's incoming messages read
+    MsgApi.markRead(Number(recipient)).then(() => {
+      MsgApi.unread().then(d => setUnread(d.count || 0)).catch(() => {});
+    }).catch(() => {});
+    // Refresh thread every 4 s while open
+    const t = setInterval(() => {
+      MsgApi.thread(recipient).then(d => !cancel && setThread(d.items || [])).catch(() => {});
+    }, 4000);
+    return () => { cancel = true; clearInterval(t); };
+  }, [open, recipient, activeTab]);
+
+  const send = async () => {
+    if (!text.trim() || !recipient || busy) return;
+    setBusy(true); setErr('');
+    try {
+      const msg = await MsgApi.send({
+        to_user_id: Number(recipient),
+        body: text.trim(),
+      });
+      setThread(prev => [...prev, msg]);
+      setText('');
+      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    } catch (e) {
+      setErr(e.response?.data?.message || 'Failed to send');
+    } finally {
+      setBusy(false);
+    }
   };
 
-  /* Build thread for selected recipient */
   const selectedContact = contacts.find(c => String(c.id) === String(recipient));
-  const thread = messages
-    .filter(m =>
-      (m.from === user?.id && m.to === selectedContact?.id) ||
-      (m.to   === user?.id && m.from === selectedContact?.id)
-    )
-    .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
-  /* All inbox messages */
-  const inbox = messages
-    .filter(m => m.to === user?.id)
-    .sort((a, b) => new Date(b.ts) - new Date(a.ts));
-
-  /* Group contacts by role */
+  /* Group contacts by role for the dropdown */
   const groupedContacts = contacts.reduce((acc, c) => {
     const r = c.role || 'unknown';
     if (!acc[r]) acc[r] = [];
@@ -164,8 +153,8 @@ export default function CommunicationPanel() {
       {open && (
         <div style={{
           position: 'fixed', bottom: 78, right: 20, zIndex: 8999,
-          width: 360, maxHeight: 540,
-          background: 'var(--panel)',
+          width: 380, maxHeight: 560,
+          background: 'var(--panel, #fff)',
           border: '1px solid var(--border)',
           borderRadius: 12,
           boxShadow: '0 8px 32px rgba(0,0,0,.16)',
@@ -205,7 +194,7 @@ export default function CommunicationPanel() {
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
             {[
               { id: 'chat',  label: 'Messages' },
-              { id: 'inbox', label: `Inbox${inbox.length > 0 ? ` (${inbox.length})` : ''}` },
+              { id: 'inbox', label: `Inbox${unread > 0 ? ` (${unread})` : ''}` },
             ].map(t => (
               <button key={t.id} onClick={() => setActiveTab(t.id)}
                 style={{
@@ -225,7 +214,7 @@ export default function CommunicationPanel() {
           {activeTab === 'chat' && (
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
 
-              {/* Recipient selector — grouped by role */}
+              {/* Recipient selector — grouped by role, shows email */}
               <div style={{
                 padding: '8px 12px',
                 borderBottom: '1px solid var(--border)',
@@ -233,7 +222,7 @@ export default function CommunicationPanel() {
                 background: 'var(--g-softer)',
               }}>
                 <div style={{ fontSize: 10, color: 'var(--td)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: .5 }}>
-                  Contact a role
+                  Pick someone to message ({contacts.length} active users)
                 </div>
                 {contacts.length > 0 ? (
                   <select
@@ -251,43 +240,48 @@ export default function CommunicationPanel() {
                         <optgroup key={r} label={`── ${r.charAt(0).toUpperCase() + r.slice(1)} ──`}>
                           {groupedContacts[r].map(c => (
                             <option key={c.id} value={String(c.id)}>
-                              {c.username || c.full_name} ({c.role})
+                              {c.full_name || c.username} — {c.username} ({c.role})
                             </option>
                           ))}
                         </optgroup>
-                      ))
-                    }
+                      ))}
                     {Object.keys(groupedContacts)
                       .filter(r => !roleOrder.includes(r))
                       .map(r => (
                         <optgroup key={r} label={`── ${r} ──`}>
                           {groupedContacts[r].map(c => (
                             <option key={c.id} value={String(c.id)}>
-                              {c.username || c.full_name} ({c.role})
+                              {c.full_name || c.username} — {c.username} ({c.role})
                             </option>
                           ))}
                         </optgroup>
-                      ))
-                    }
+                      ))}
                   </select>
                 ) : (
                   <div style={{ fontSize: 11.5, color: 'var(--td)' }}>No contacts available.</div>
                 )}
 
-                {/* Show selected contact's role badge */}
+                {/* Selected contact details — name, role, email */}
                 {selectedContact && (
-                  <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{
-                      padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700,
-                      background: ROLE_COLORS[selectedContact.role]?.bg || '#333',
-                      color:      ROLE_COLORS[selectedContact.role]?.text || '#fff',
-                      textTransform: 'capitalize',
-                    }}>
-                      {selectedContact.role}
-                    </span>
-                    <span style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 600 }}>
-                      {selectedContact.username || selectedContact.full_name}
-                    </span>
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{
+                        padding: '2px 8px', borderRadius: 4, fontSize: 10.5, fontWeight: 700,
+                        background: ROLE_COLORS[selectedContact.role]?.bg || '#333',
+                        color:      ROLE_COLORS[selectedContact.role]?.text || '#fff',
+                        textTransform: 'capitalize',
+                      }}>
+                        {selectedContact.role}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: 'var(--tm)', fontWeight: 600 }}>
+                        {selectedContact.full_name || selectedContact.username}
+                      </span>
+                    </div>
+                    {selectedContact.email && (
+                      <div style={{ fontSize: 10.5, color: 'var(--td)', fontFamily: "'JetBrains Mono', monospace" }}>
+                        ✉ {selectedContact.email}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -297,22 +291,27 @@ export default function CommunicationPanel() {
                 {thread.length === 0 && (
                   <div style={{ color: 'var(--td)', fontSize: 12, textAlign: 'center', marginTop: 20, lineHeight: 1.6 }}>
                     {selectedContact
-                      ? `Start a conversation with\n${selectedContact.username}`
+                      ? `Start a conversation with ${selectedContact.full_name || selectedContact.username}`
                       : 'Select a contact to start chatting'}
                   </div>
                 )}
                 {thread.map(m => {
-                  const isMe = m.from === user?.id;
+                  const isMe = m.from_user_id === user?.id;
+                  const isAlert = m.kind === 'alert';
                   return (
                     <div key={m.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
                       <div style={{
                         maxWidth: '82%', padding: '7px 11px',
                         borderRadius: isMe ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-                        background: isMe ? 'var(--g)' : 'var(--g-softer)',
-                        border: `1px solid ${isMe ? 'transparent' : 'var(--border)'}`,
-                        color: isMe ? '#fff' : 'var(--tx)',
+                        background: isAlert ? 'rgba(214,69,69,.12)'
+                                   : isMe   ? 'var(--g)' : 'var(--g-softer)',
+                        border: `1px solid ${isAlert ? 'var(--red)'
+                                            : isMe   ? 'transparent' : 'var(--border)'}`,
+                        color: isAlert ? 'var(--red)' : isMe ? '#fff' : 'var(--tx)',
                         fontSize: 12.5, lineHeight: 1.45,
+                        whiteSpace: 'pre-wrap',
                       }}>
+                        {isAlert && <span style={{ fontWeight: 700 }}>🚨 ALERT — </span>}
                         {m.body}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 2, fontSize: 9.5, color: 'var(--td)' }}>
@@ -326,13 +325,19 @@ export default function CommunicationPanel() {
                             {m.fromRole}
                           </span>
                         )}
-                        {new Date(m.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(m.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                       </div>
                     </div>
                   );
                 })}
                 <div ref={bottomRef} />
               </div>
+
+              {err && (
+                <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--red)', background: 'rgba(214,69,69,.06)' }}>
+                  {err}
+                </div>
+              )}
 
               {/* Compose */}
               <div style={{
@@ -345,7 +350,7 @@ export default function CommunicationPanel() {
                   onChange={e => setText(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && !e.shiftKey && (e.preventDefault(), send())}
                   placeholder={selectedContact ? `Message ${selectedContact.username}…` : 'Select a contact first…'}
-                  disabled={!selectedContact}
+                  disabled={!selectedContact || busy}
                   style={{
                     flex: 1, fontSize: 12.5, padding: '7px 10px',
                     border: '1px solid var(--border)', borderRadius: 7,
@@ -355,16 +360,16 @@ export default function CommunicationPanel() {
                 />
                 <button
                   onClick={send}
-                  disabled={!text.trim() || !selectedContact}
+                  disabled={!text.trim() || !selectedContact || busy}
                   style={{
                     background: 'var(--g)', border: 'none', cursor: 'pointer',
                     borderRadius: 7, padding: '0 14px', color: '#fff', fontSize: 12,
                     fontWeight: 600,
-                    opacity: (!text.trim() || !selectedContact) ? .4 : 1,
+                    opacity: (!text.trim() || !selectedContact || busy) ? .4 : 1,
                     transition: 'opacity .15s',
                   }}
                 >
-                  Send
+                  {busy ? '…' : 'Send'}
                 </button>
               </div>
             </div>
@@ -375,49 +380,64 @@ export default function CommunicationPanel() {
             <div style={{ flex: 1, overflowY: 'auto', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
               {inbox.length === 0 ? (
                 <div style={{ color: 'var(--td)', fontSize: 12, textAlign: 'center', marginTop: 24 }}>
-                  No messages received yet.
+                  No messages yet.
                 </div>
               ) : (
-                inbox.map(m => (
-                  <div key={m.id} style={{
-                    padding: '10px 12px',
-                    background: m.read ? 'var(--g-softer)' : 'rgba(0,122,61,.06)',
-                    border: `1px solid ${m.read ? 'var(--border)' : 'rgba(0,122,61,.22)'}`,
-                    borderRadius: 8,
-                    borderLeft: `3px solid ${ROLE_COLORS[m.fromRole]?.bg || '#ccc'}`,
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <span style={{
-                          padding: '2px 7px', borderRadius: 4,
-                          background: ROLE_COLORS[m.fromRole]?.bg || '#333',
-                          color:      ROLE_COLORS[m.fromRole]?.text || '#fff',
-                          fontSize: 9.5, fontWeight: 700, textTransform: 'capitalize',
-                        }}>
-                          {m.fromRole}
-                        </span>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tx)' }}>{m.fromName}</span>
+                inbox
+                  .filter(m => m.to_user_id === user?.id)
+                  .map(m => {
+                    const isAlert = m.kind === 'alert';
+                    return (
+                      <div key={m.id} style={{
+                        padding: '10px 12px',
+                        background: isAlert ? 'rgba(214,69,69,.06)' :
+                                    m.read  ? 'var(--g-softer)' : 'rgba(0,122,61,.06)',
+                        border: `1px solid ${isAlert ? 'var(--red)'
+                                            : m.read ? 'var(--border)' : 'rgba(0,122,61,.22)'}`,
+                        borderRadius: 8,
+                        borderLeft: `3px solid ${isAlert ? 'var(--red)'
+                                                : ROLE_COLORS[m.fromRole]?.bg || '#ccc'}`,
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{
+                              padding: '2px 7px', borderRadius: 4,
+                              background: ROLE_COLORS[m.fromRole]?.bg || '#333',
+                              color:      ROLE_COLORS[m.fromRole]?.text || '#fff',
+                              fontSize: 9.5, fontWeight: 700, textTransform: 'capitalize',
+                            }}>
+                              {m.fromRole || 'system'}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--tx)' }}>{m.fromName || m.from_username}</span>
+                            {isAlert && (
+                              <span style={{ fontSize: 9, color: 'var(--red)', fontWeight: 700, letterSpacing: 1 }}>
+                                🚨 CRITICAL
+                              </span>
+                            )}
+                          </div>
+                          <span style={{ fontSize: 10, color: 'var(--td)', fontFamily: "'JetBrains Mono', monospace" }}>
+                            {new Date(m.created_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12.5, color: 'var(--tx)', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                          {m.body}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setRecipient(String(m.from_user_id));
+                            setActiveTab('chat');
+                          }}
+                          style={{
+                            marginTop: 7, fontSize: 10.5, color: 'var(--g)', background: 'none',
+                            border: '1px solid var(--border)', borderRadius: 5, padding: '3px 9px',
+                            cursor: 'pointer', fontWeight: 600,
+                          }}
+                        >
+                          ↩ Reply
+                        </button>
                       </div>
-                      <span style={{ fontSize: 10, color: 'var(--td)', fontFamily: "'JetBrains Mono', monospace" }}>
-                        {new Date(m.ts).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12.5, color: 'var(--tx)', lineHeight: 1.5 }}>{m.body}</div>
-                    <button
-                      onClick={() => {
-                        setRecipient(String(m.from));
-                        setActiveTab('chat');
-                      }}
-                      style={{
-                        marginTop: 7, fontSize: 10.5, color: 'var(--g)', background: 'none',
-                        border: '1px solid var(--border)', borderRadius: 5, padding: '3px 9px',
-                        cursor: 'pointer', fontWeight: 600,
-                      }}
-                    >
-                      ↩ Reply
-                    </button>
-                  </div>
-                ))
+                    );
+                  })
               )}
             </div>
           )}

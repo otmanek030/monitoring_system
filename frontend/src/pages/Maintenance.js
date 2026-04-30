@@ -19,6 +19,7 @@ import {
   Users       as UsersApi,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import TableSearch, { useTableSearch } from '../components/TableSearch';
 
 const STATUSES = [
   { value: 'open',        label: 'Open',        cls: 'info' },
@@ -38,7 +39,8 @@ export default function Maintenance() {
   const [items,       setItems]       = useState([]);
   const [equipment,   setEquipment]   = useState([]);
   const [technicians, setTechnicians] = useState([]);
-  const [filter,      setFilter]      = useState('');
+  const [filter,      setFilter]      = useState('');     // status filter
+  const [search,      setSearch]      = useState('');     // free-text search
   const [showNew,     setShowNew]     = useState(false);
   const [expanded,    setExpanded]    = useState(null);  // order_id of expanded row
   const [addingNote,  setAddingNote]  = useState(null);  // order_id being noted
@@ -97,11 +99,12 @@ export default function Maintenance() {
     }
   };
 
-  const visible = items.filter(i =>
-    !filter ||
-    i.status === filter ||
-    (i.title || '').toLowerCase().includes(filter.toLowerCase())
-  );
+  // Status filter first (server-side semantics), then free-text search.
+  const byStatus = filter ? items.filter(i => i.status === filter) : items;
+  const visible  = useTableSearch(byStatus, search, [
+    'title', 'description', 'order_type', 'priority', 'status',
+    'equipment_tag', 'equipment_name', 'assigned_username', 'created_by_username',
+  ]);
 
   /* Count orders with notes for the header badge */
   const withNotes = items.filter(m => m.notes).length;
@@ -122,7 +125,14 @@ export default function Maintenance() {
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <TableSearch
+            value={search}
+            onChange={setSearch}
+            total={byStatus.length}
+            shown={visible.length}
+            placeholder="Search title, equipment, assignee…"
+          />
           <select value={filter} onChange={e => setFilter(e.target.value)}>
             <option value="">All statuses</option>
             {STATUSES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}

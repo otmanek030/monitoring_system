@@ -1,15 +1,28 @@
 /**
- * Reports page.
+ * Reports — professional, clean dashboard.
  *
- * Features:
- *   1. ReportGenerator — plant-wide reports (xlsx/pdf) for users with reports:r
- *   2. Shift report PDF — includes notes, alarms, work orders
- *   3. Recent Shift Notes preview — visible in the page itself, included in exports
+ * Layout:
+ *   ┌────────── PAGE HEADER (title + summary) ──────────┐
+ *   │                                                    │
+ *   │ ┌──────────────┐  ┌──────────────┐                 │
+ *   │ │ Generate     │  │ Available    │                 │
+ *   │ │ report       │  │ types        │                 │
+ *   │ └──────────────┘  └──────────────┘                 │
+ *   │                                                    │
+ *   │ ┌──────────────┐                                   │
+ *   │ │ My shift PDF │                                   │
+ *   │ └──────────────┘                                   │
+ *   │                                                    │
+ *   │ ┌────────────────────────────────────────────────┐ │
+ *   │ │ Recent shift notes (with search)              │ │
+ *   │ └────────────────────────────────────────────────┘ │
+ *   └────────────────────────────────────────────────────┘
  */
 import { useEffect, useState } from 'react';
 import ReportGenerator from '../components/Reports/ReportGenerator';
 import { Equipment as EqApi, Reports as ReportsApi, Notes as NotesApi } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import TableSearch, { useTableSearch, NoResultsRow } from '../components/TableSearch';
 
 const SEV_COLOR = { info: 'var(--cyan)', warning: 'var(--yellow)', critical: 'var(--red)' };
 const CAT_ICON  = { observation: '👁', incident: '⚠', handover: '🔄', maintenance: '🔧', safety: '🦺' };
@@ -17,76 +30,95 @@ const CAT_ICON  = { observation: '👁', incident: '⚠', handover: '🔄', main
 export default function Reports() {
   const [equipment, setEquipment] = useState([]);
   const [notes,     setNotes]     = useState([]);
+  const [search,    setSearch]    = useState('');
   const { can, user } = useAuth();
 
   useEffect(() => {
-    EqApi.list()
-      .then(d => setEquipment(d.items || d.equipment || d || []))
-      .catch(() => {});
-  }, []);
-
-  /* Load today's shift notes for preview */
-  useEffect(() => {
-    NotesApi.list({ limit: 20 })
-      .then(d => setNotes(d.items || []))
-      .catch(() => {});
+    EqApi.list().then(d => setEquipment(d.items || d.equipment || d || [])).catch(() => {});
+    NotesApi.list({ limit: 50 }).then(d => setNotes(d.items || [])).catch(() => {});
   }, []);
 
   const canPlantReports = can('reports', 'r');
   const canShiftReport  = can('my_shift', 'r');
 
+  const visibleNotes = useTableSearch(notes, search, [
+    'title', 'body', 'author', 'username', 'category', 'shift', 'severity', 'equipment_tag',
+  ]);
+
+  /* Tile metadata for the right-hand catalog */
+  const reportTypes = [
+    canPlantReports && { icon: '📊', tag: 'XLSX', label: 'Equipment readings',
+      desc: 'All sensor data, alarms, and aggregated stats per sensor for the chosen asset.' },
+    canPlantReports && { icon: '📄', tag: 'PDF', label: 'Equipment summary',
+      desc: 'Executive summary: health score, RUL, alarm count, top events.' },
+    canPlantReports && { icon: '📋', tag: 'XLSX', label: 'Alarms log',
+      desc: 'Every alarm in the date range with ack info and trigger values.' },
+    canPlantReports && { icon: '🏭', tag: 'PDF', label: 'Plant summary',
+      desc: 'KPIs · top offenders · AI predictions · maintenance status.' },
+    canShiftReport && { icon: '📝', tag: 'PDF', label: 'My shift',
+      desc: 'Your shift notes, raised alarms, and assigned work orders for the period.' },
+  ].filter(Boolean);
+
   return (
     <div>
+      {/* ── Page header ── */}
       <div className="page-head">
-        <h2>Reports &amp; Exports</h2>
-        <span style={{ fontSize: 11.5, color: 'var(--tm)' }}>
-          On-demand xlsx / pdf generation — streamed from the backend
-        </span>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: canPlantReports ? '1fr 1fr' : '1fr', gap: 12 }}>
-        {canPlantReports && <ReportGenerator equipment={equipment} />}
-        {canShiftReport  && <ShiftReportCard username={user?.username} />}
-
-        {/* Available types reference */}
-        <div className="panel">
-          <div className="panel-head">
-            <span className="title">Available Report Types</span>
-            <span className="menu">⋯</span>
+        <div>
+          <h2 style={{ margin: 0 }}>Reports & Exports</h2>
+          <div style={{ fontSize: 12, color: 'var(--tm)', marginTop: 4 }}>
+            Build and download Excel / PDF reports — streamed straight from the backend.
+            Everything is JWT-authenticated and rendered server-side from live Postgres data.
           </div>
-          <div className="panel-body" style={{ gap: 8 }}>
-            {canPlantReports && (
-              <>
-                <ReportTypeRow icon="📊" label="Equipment (xlsx)" desc="Sensor readings + alarms + aggregated stats per sensor" />
-                <ReportTypeRow icon="📄" label="Equipment (pdf)"  desc="Executive summary: health score, RUL, alarm count" />
-                <ReportTypeRow icon="📋" label="Alarms log (xlsx)" desc="All alarms in date range with ack info and trigger values" />
-                <ReportTypeRow icon="🏭" label="Plant summary (pdf)" desc="KPIs, top offenders, AI predictions, maintenance status" />
-              </>
-            )}
-            {canShiftReport && (
-              <ReportTypeRow icon="📝" label="My shift (pdf)"
-                desc="Your shift notes, raised alarms, and assigned work orders — includes all notes visible below" />
-            )}
-          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--tm)', flexWrap: 'wrap' }}>
+          <KpiPill label="Equipment"   value={equipment.length}                    color="var(--g)" />
+          <KpiPill label="Recent notes" value={notes.length}                        color="var(--cyan)" />
+          <KpiPill label="Floor date"  value="15/04/2026"                          color="var(--tm)" mono />
         </div>
       </div>
 
-      {/* ── Shift Notes Preview ── */}
-      <div className="panel" style={{ marginTop: 12 }}>
-        <div className="panel-head">
-          <span className="title">Shift Notes</span>
-          <span style={{ fontSize: 10.5, color: 'var(--tm)', marginLeft: 4 }}>
-            {notes.length} recent note(s) · included in shift PDF exports
+      {/* ── Top row: Generator + Catalog (+ Shift card if permitted) ── */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: canShiftReport ? '1.4fr 1fr' : '1.4fr 1fr',
+        gap: 14, marginBottom: 14,
+      }}>
+        {canPlantReports
+          ? <ReportGenerator equipment={equipment} />
+          : <RestrictedNotice />}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <ReportTypesCatalog types={reportTypes} />
+          {canShiftReport && <ShiftReportCard username={user?.username} />}
+        </div>
+      </div>
+
+      {/* ── Recent shift notes preview, with search ── */}
+      <div className="panel">
+        <div className="panel-head" style={{ gap: 12 }}>
+          <span className="title">Recent Shift Notes</span>
+          <span style={{ fontSize: 10.5, color: 'var(--tm)' }}>
+            Included verbatim in the PDF exports above.
           </span>
-          <span className="menu">⋯</span>
+          <span style={{ marginLeft: 'auto' }}>
+            <TableSearch
+              value={search}
+              onChange={setSearch}
+              total={notes.length}
+              shown={visibleNotes.length}
+              placeholder="Search title, body, author…"
+            />
+          </span>
         </div>
+
         {notes.length === 0 ? (
-          <div style={{ padding: '24px 16px', textAlign: 'center', color: 'var(--td)', fontSize: 12.5 }}>
-            <div style={{ fontSize: 22, marginBottom: 6 }}>📋</div>
-            No shift notes found — go to the Notes page to add them.
-          </div>
+          <EmptyState
+            icon="📋"
+            title="No shift notes yet"
+            hint="Operators / technicians can add shift notes from the Notes page."
+          />
         ) : (
-          <div style={{ overflowY: 'auto', maxHeight: 400 }}>
+          <div style={{ overflowY: 'auto', maxHeight: 460 }}>
             <table className="tbl">
               <thead style={{ position: 'sticky', top: 0, background: 'var(--panel)', zIndex: 1 }}>
                 <tr>
@@ -100,15 +132,18 @@ export default function Reports() {
                 </tr>
               </thead>
               <tbody>
-                {notes.map(n => (
+                {!visibleNotes.length && (
+                  <NoResultsRow colSpan={7} query={search} />
+                )}
+                {visibleNotes.map(n => (
                   <tr key={n.id} style={{
                     borderLeft: `3px solid ${SEV_COLOR[n.severity] || 'transparent'}`,
                   }}>
                     <td>
                       <span style={{
-                        fontSize: 10.5, fontWeight: 600,
+                        fontSize: 10.5, fontWeight: 700,
                         color: SEV_COLOR[n.severity] || 'var(--tm)',
-                        textTransform: 'uppercase',
+                        textTransform: 'uppercase', letterSpacing: .4,
                       }}>
                         {n.severity}
                       </span>
@@ -116,7 +151,7 @@ export default function Reports() {
                     <td style={{ fontSize: 11.5 }}>
                       {CAT_ICON[n.category] || '📝'} {n.category}
                     </td>
-                    <td style={{ fontWeight: 500, maxWidth: 220, fontSize: 12 }}>
+                    <td style={{ fontWeight: 500, maxWidth: 280, fontSize: 12 }}>
                       {n.title}
                     </td>
                     <td>
@@ -144,42 +179,121 @@ export default function Reports() {
   );
 }
 
-/* ── Report type row ── */
-function ReportTypeRow({ icon, label, desc }) {
+/* ── Header KPI pill ── */
+function KpiPill({ label, value, color, mono }) {
   return (
     <div style={{
-      display: 'flex', gap: 10, alignItems: 'flex-start',
-      padding: '8px 0', borderBottom: '1px solid var(--border)',
+      background: '#fff',
+      border: '1px solid var(--border)',
+      borderRadius: 6,
+      padding: '6px 10px',
+      display: 'flex', flexDirection: 'column',
+      minWidth: 90,
     }}>
-      <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-      <div>
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--tx)' }}>{label}</div>
-        <div style={{ fontSize: 11.5, color: 'var(--td)' }}>{desc}</div>
+      <span style={{ fontSize: 9.5, color: 'var(--td)', letterSpacing: .5, textTransform: 'uppercase' }}>{label}</span>
+      <span style={{
+        fontSize: 14, fontWeight: 700, color,
+        fontFamily: mono ? "'JetBrains Mono', monospace" : 'inherit',
+      }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* ── Catalog: list of available report types ── */
+function ReportTypesCatalog({ types }) {
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span className="title">Available Report Types</span>
+        <span className="menu">⋯</span>
+      </div>
+      <div className="panel-body" style={{ gap: 10, padding: '12px 14px' }}>
+        {types.map((t, i) => (
+          <div key={i} style={{
+            display: 'flex', gap: 11, alignItems: 'flex-start',
+            padding: '8px 10px',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            background: 'var(--g-softer)',
+          }}>
+            <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>{t.icon}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <strong style={{ fontSize: 12.5, color: 'var(--tx)' }}>{t.label}</strong>
+                <span style={{
+                  fontSize: 9.5, fontWeight: 700, letterSpacing: .5,
+                  color: 'var(--g)', border: '1px solid var(--g)', borderRadius: 4,
+                  padding: '0px 6px', textTransform: 'uppercase',
+                }}>
+                  {t.tag}
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: 'var(--td)', lineHeight: 1.4 }}>
+                {t.desc}
+              </div>
+            </div>
+          </div>
+        ))}
+        {!types.length && (
+          <div style={{ color: 'var(--td)', fontSize: 12, padding: 8 }}>
+            No report types available for your role.
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-/* ── Shift report PDF card ── */
-function todayStart() {
-  const d = new Date(); d.setHours(0, 0, 0, 0); return d;
+/* ── Permission-restricted notice ── */
+function RestrictedNotice() {
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <span className="title">Generate Report</span>
+        <span className="menu">⋯</span>
+      </div>
+      <div style={{ padding: 24, textAlign: 'center', color: 'var(--tm)' }}>
+        <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>Report generation is restricted.</div>
+        <div style={{ fontSize: 11.5, color: 'var(--td)', marginTop: 4 }}>
+          Ask an administrator to grant you the <code>reports:r</code> permission.
+        </div>
+      </div>
+    </div>
+  );
 }
+
+/* ── Empty-state placeholder ── */
+function EmptyState({ icon, title, hint }) {
+  return (
+    <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--tm)' }}>
+      <div style={{ fontSize: 28, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{title}</div>
+      {hint && <div style={{ fontSize: 11.5, color: 'var(--td)', marginTop: 4 }}>{hint}</div>}
+    </div>
+  );
+}
+
+/* ── My shift PDF card — styled like ReportGenerator's success state ── */
+function todayStart() { const d = new Date(); d.setHours(0,0,0,0); return d; }
 
 function ShiftReportCard({ username }) {
   const [from, setFrom] = useState(() => todayStart().toISOString().slice(0, 16));
   const [to,   setTo]   = useState(() => new Date().toISOString().slice(0, 16));
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState('');
+  const [done, setDone] = useState(null);
 
   const run = async () => {
-    setBusy(true); setErr('');
+    setBusy(true); setErr(''); setDone(null);
     try {
       const fromIso = new Date(from).toISOString();
       const toIso   = new Date(to).toISOString();
-      await ReportsApi.download(
-        ReportsApi.myShiftPdfUrl(fromIso, toIso),
-        `shift_${username || 'me'}_${fromIso.slice(0, 10)}.pdf`
-      );
+      const filename = `shift_${username || 'me'}_${fromIso.slice(0, 10)}.pdf`;
+      await ReportsApi.download(ReportsApi.myShiftPdfUrl(fromIso, toIso), filename);
+      setDone(filename);
     } catch (e) {
       setErr(e.response?.data?.message || 'Failed to generate PDF');
     } finally { setBusy(false); }
@@ -190,32 +304,45 @@ function ShiftReportCard({ username }) {
       <div className="panel-head">
         <span className="title">My Shift Report</span>
         <span style={{
-          fontSize: 10, fontWeight: 700, letterSpacing: .5,
+          fontSize: 9.5, fontWeight: 700, letterSpacing: .5,
           color: 'var(--g)', border: '1px solid var(--g)', borderRadius: 4,
-          padding: '1px 6px', textTransform: 'uppercase',
+          padding: '0px 6px', textTransform: 'uppercase',
         }}>PDF</span>
         <span className="menu">⋯</span>
       </div>
-      <div className="panel-body" style={{ gap: 12 }}>
-        <p style={{ fontSize: 12.5, color: 'var(--tm)', margin: 0 }}>
-          Generates a PDF containing <strong>your shift notes</strong>, raised alarms,
-          and work orders assigned to you in the selected time range.
+      <div className="panel-body" style={{ gap: 12, padding: '12px 14px' }}>
+        <p style={{ fontSize: 12, color: 'var(--tm)', margin: 0, lineHeight: 1.5 }}>
+          Includes <strong>your shift notes</strong>, raised alarms, and work orders
+          assigned to you in the selected window.
         </p>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 11, color: 'var(--tm)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .5 }}>From</span>
-            <input type="datetime-local" value={from} onChange={e => setFrom(e.target.value)} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 10, color: 'var(--td)' }}>From</span>
+            <input type="datetime-local" value={from} onChange={e => setFrom(e.target.value)}
+              min="2026-04-15T00:00" />
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            <span style={{ fontSize: 11, color: 'var(--tm)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: .5 }}>To</span>
-            <input type="datetime-local" value={to} onChange={e => setTo(e.target.value)} />
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: 10, color: 'var(--td)' }}>To</span>
+            <input type="datetime-local" value={to} onChange={e => setTo(e.target.value)} min={from} />
           </label>
         </div>
 
-        {err && <div className="error">{err}</div>}
+        {err && <div style={{
+          border: '1px solid rgba(214,69,69,.3)', background: 'rgba(214,69,69,.06)',
+          color: 'var(--red)', borderRadius: 6, padding: '7px 11px', fontSize: 12,
+        }}>⚠ {err}</div>}
+        {done && !busy && (
+          <div style={{
+            border: '1px solid rgba(0,122,61,.3)', background: 'rgba(0,122,61,.06)',
+            color: 'var(--g)', borderRadius: 6, padding: '7px 11px', fontSize: 12,
+          }}>
+            ✓ Saved <code style={{ background: 'var(--g-softer)', padding: '1px 6px', borderRadius: 3 }}>{done}</code>
+          </div>
+        )}
 
-        <button className="primary" onClick={run} disabled={busy} style={{ width: '100%' }}>
+        <button className="primary" onClick={run} disabled={busy}
+          style={{ width: '100%', padding: '10px 12px', fontSize: 13, fontWeight: 700 }}>
           {busy ? '⏳ Generating PDF…' : '📄 Generate Shift PDF'}
         </button>
       </div>

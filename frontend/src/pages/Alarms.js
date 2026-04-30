@@ -1,12 +1,17 @@
 /**
  * Alarms — full alarm log with filters, inline Ack/Clear actions,
- * and expandable detail panel per alarm row.
- * Live new-alarm pushes via Socket.io.
+ * and an expandable detail panel per alarm row.
+ *
+ * The detail panel can also be opened directly via /alarms/:id (deep-link)
+ * — the row scrolls into view and expands automatically. Live new-alarm
+ * pushes via Socket.io trigger a list reload.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Alarms as AlarmsApi } from '../services/api';
 import { useLiveFeed } from '../services/websocket';
 import { useAuth } from '../contexts/AuthContext';
+import TableSearch, { useTableSearch, NoResultsRow } from '../components/TableSearch';
 
 /* ── Severity helpers ───────────────────────────────────────────── */
 const sevClass = (sev) => {
@@ -133,6 +138,20 @@ function AlarmDetail({ alarm, onClose, onAck, onClear, canEdit }) {
               fontSize: 11.5, cursor: 'pointer', color: 'var(--tm)',
             }}>✕ Close</button>
 
+            <button
+              onClick={() => {
+                const url = `${window.location.origin}/alarms/${alarm.id}`;
+                if (navigator.clipboard) navigator.clipboard.writeText(url);
+              }}
+              title="Copy permalink"
+              style={{
+                background: '#fff', border: '1px solid var(--border)',
+                borderRadius: 5, padding: '4px 10px',
+                fontSize: 11.5, cursor: 'pointer', color: 'var(--tm)',
+              }}>
+              🔗 Copy link
+            </button>
+
             {canEdit && alarm.status !== 'cleared' && (
               <>
                 {alarm.status === 'active' && (
@@ -182,19 +201,24 @@ function DetailRow({ label, value, mono }) {
 /* ── Main page ──────────────────────────────────────────────────── */
 export default function Alarms() {
   const [items, setItems]         = useState([]);
-  const [status, setStatus]       = useState('active');
+  // Default to 'all' so users see the full backfilled history (15/04/2026 → now)
+  const [status, setStatus]       = useState('');
   const [severity, setSeverity]   = useState('');
   const [error, setError]         = useState('');
+  const [search, setSearch]       = useState('');
   const [expandedId, setExpandedId] = useState(null); // which alarm row is expanded
   const { can } = useAuth();
   const { latestAlarm } = useLiveFeed({});
+  const { id: deepLinkId } = useParams();
+  const navigate = useNavigate();
+  const rowRefs = useRef({});
 
   const load = useCallback(async () => {
     try {
       const d = await AlarmsApi.list({
         status:   status   || undefined,
         severity: severity || undefined,
-        limit: 200,
+        limit: 500,
       });
       setItems(d.items || d);
       setError('');
@@ -206,16 +230,58 @@ export default function Alarms() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (latestAlarm) load(); }, [latestAlarm, load]);
 
+  /* Deep-link: /alarms/:id auto-expands the matching row. Runs once when
+     the URL parameter changes; the missing-row fetch is one-shot per id. */
+  useEffect(() => {
+    if (!deepLinkId) return;
+    const idNum = Number(deepLinkId);
+    if (!Number.isFinite(idNum)) return;
+    setExpandedId(idNum);
+
+    // Fire-and-forget: if the alarm isn't in the current filter view,
+    // pull it directly so the user always sees the linked alarm.
+    AlarmsApi.get(idNum)
+      .then(a => setItems(prev =>
+        prev.some(p => p.id === a.id) ? prev : [a, ...prev]
+      ))
+      .catch(() => setError(`Alarm #${idNum} not found`));
+
+    // Scroll into view once the row is mounted
+    const t = setTimeout(() => {
+      const node = rowRefs.current[idNum];
+      if (node && node.scrollIntoView) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [deepLinkId]);
+
   const act = async (fn, id) => {
     try { await fn(id); load(); setExpandedId(null); }
     catch (e) { setError(e.response?.data?.message || 'Action failed'); }
   };
 
-  const toggleExpand = (id) => setExpandedId(prev => prev === id ? null : id);
+  const toggleExpand = (id) => {
+    setExpandedId(prev => {
+      const next = prev === id ? null : id;
+      // Keep the URL in sync so the user can copy/paste a deep link
+      if (next) navigate(`/alarms/${id}`, { replace: true });
+      else      navigate('/alarms',       { replace: true });
+      return next;
+    });
+  };
 
   /* Severity counts for summary */
   const critCount = items.filter(a => ['fatal', 'critical', 'high'].includes(a.severity)).length;
   const warnCount = items.filter(a => ['medium', 'warning'].includes(a.severity)).length;
+
+  /* Real-time search across the most useful alarm fields. */
+  const filtered = useTableSearch(items, search, [
+    'message', 'severity', 'status',
+    'equipment_tag', 'equipment_name',
+    'sensor_tag', 'sensor_name',
+    'rule_name', 'rule_code',
+  ]);
 
   return (
     <div>
@@ -232,8 +298,15 @@ export default function Alarms() {
           </div>
         </div>
 
-        {/* Filters */}
-        <div style={{ display: 'flex', gap: 8 }}>
+        {/* Filters + search */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <TableSearch
+            value={search}
+            onChange={setSearch}
+            total={items.length}
+            shown={filtered.length}
+            placeholder="Search alarms…"
+          />
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All statuses</option>
             <option value="active">Active</option>
@@ -280,12 +353,12 @@ export default function Alarms() {
               </tr>
             </thead>
             <tbody>
-              {items.map(a => {
+              {filtered.map(a => {
                 const isOpen = expandedId === a.id;
                 return (
-                  <>
+                  <Fragment key={a.id}>
                     <tr
-                      key={a.id}
+                      ref={el => { rowRefs.current[a.id] = el; }}
                       onClick={() => toggleExpand(a.id)}
                       style={{
                         background: isOpen ? '#eaf4ee' : sevBg(a.severity),
@@ -315,7 +388,12 @@ export default function Alarms() {
                         })}
                       </td>
                       <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>
-                        {can('alarms', 'u') && a.status !== 'cleared' && (
+                        <button className="ghost small" style={{ marginRight: 4 }}
+                          title="View full details"
+                          onClick={() => toggleExpand(a.id)}>
+                          {isOpen ? '▼ Hide' : '👁 Details'}
+                        </button>
+                        {can('alarms', 'w') && a.status !== 'cleared' && (
                           <>
                             {a.status === 'active' && (
                               <button className="ghost small" style={{ marginRight: 4 }}
@@ -332,13 +410,13 @@ export default function Alarms() {
                     {isOpen && (
                       <AlarmDetail
                         alarm={a}
-                        onClose={() => setExpandedId(null)}
+                        onClose={() => { setExpandedId(null); navigate('/alarms', { replace: true }); }}
                         onAck={() => act(AlarmsApi.ack, a.id)}
                         onClear={() => act(AlarmsApi.clear, a.id)}
-                        canEdit={can('alarms', 'u')}
+                        canEdit={can('alarms', 'w')}
                       />
                     )}
-                  </>
+                  </Fragment>
                 );
               })}
               {!items.length && (
@@ -347,6 +425,9 @@ export default function Alarms() {
                     {status === 'active' ? '✓ No active alarms — plant operating normally' : 'No alarms match the filter.'}
                   </td>
                 </tr>
+              )}
+              {items.length > 0 && filtered.length === 0 && (
+                <NoResultsRow colSpan={8} query={search} />
               )}
             </tbody>
           </table>

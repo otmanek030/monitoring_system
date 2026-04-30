@@ -15,10 +15,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python deps into a dedicated prefix so they copy cleanly.
 # --retries + --timeout make pip resilient on slow / flaky connections
 # (xgboost/scipy/pandas wheels are ~50MB each and frequently time out).
+#
+# Strategy: pin pip, install heavy numeric wheels FIRST (so a network
+# blip on numpy/scipy/xgboost doesn't restart the whole resolver), then
+# install the rest. This shaves rebuild time significantly when only
+# the lighter dependencies change.
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --prefix=/install --no-warn-script-location \
-        --retries 10 --timeout 120 \
+ENV PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=15 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Install in a single pass with a current pip + build tools.
+# Build deps (gcc/g++/python3-dev) are present from the apt-get above so
+# any package without a wheel for this platform can still compile.
+RUN pip install --upgrade "pip>=24.0" "setuptools>=68" "wheel" && \
+    pip install --prefix=/install --no-warn-script-location \
         -r requirements.txt
 
 

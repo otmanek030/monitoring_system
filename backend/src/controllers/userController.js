@@ -69,6 +69,34 @@ const list = asyncHandler(async (_req, res) => {
   res.json({ items, users: items });   // both shapes for compatibility
 });
 
+/**
+ * GET /api/users/directory
+ *   Lightweight public-ish directory of active users — the Communication
+ *   panel (every role) and the equipment "responsible user" picker call
+ *   this. Strips sensitive fields (password_hash never leaves the DB,
+ *   last_login isn't relevant for messaging).
+ *
+ *   Auth-required but no role restriction so operator-level users can
+ *   actually pick a recipient to message.
+ */
+const directory = asyncHandler(async (_req, res) => {
+  const { rows } = await query(
+    `SELECT u.user_id, u.username, u.email, u.full_name, u.is_active,
+            r.code AS role
+     FROM users u JOIN roles r ON r.role_id = u.role_id
+     WHERE u.is_active = TRUE
+     ORDER BY u.username`);
+  const items = rows.map(u => ({
+    id:        u.user_id,
+    username:  u.username,
+    email:     u.email,
+    full_name: u.full_name,
+    role:      u.role,
+    is_active: u.is_active,
+  }));
+  res.json({ items });
+});
+
 const create = asyncHandler(async (req, res) => {
   const { username, email, full_name, password, role = 'operator' } = req.body || {};
   if (!username || !email || !password) throw new ApiError(400, 'username, email, password required');
@@ -129,4 +157,4 @@ const remove = asyncHandler(async (req, res) => {
   res.json({ ok: true, id });
 });
 
-module.exports = { list, create, setActive, setRole, remove };
+module.exports = { list, directory, create, setActive, setRole, remove };

@@ -115,26 +115,43 @@ const FAILURE_MODES = [
   'belt_slip',
 ];
 
-/** Spread a scalar prob around the predicted mode + softmax over the others. */
-function modeDistribution(failureProb, predictedClass) {
+/**
+ * Fallback distribution used ONLY when the ML service didn't return
+ * mode_probabilities (e.g. older model file). The new
+ * predictive_maintenance.py emits its own measurement-aware breakdown
+ * so this function is rarely hit in practice.
+ *
+ * Strategy: spread weights based on which sensor measurement is
+ * present in `features` rather than always favouring bearing_fault.
+ */
+function fallbackModeDistribution(failureProb, features = []) {
   const p = Math.max(0, Math.min(1, Number(failureProb) || 0));
-  const modes = {};
-  const others = FAILURE_MODES.filter(m => m !== predictedClass);
-  if (predictedClass) {
-    modes[predictedClass] = p;                    // dominant
-    // distribute (1-p) across the remaining modes, weighted 1/rank
-    let weights = others.map((_, i) => 1 / (i + 2));
-    const wsum = weights.reduce((s, w) => s + w, 0);
-    weights = weights.map(w => w / wsum);
-    others.forEach((m, i) => { modes[m] = (1 - p) * weights[i] * 0.5; });
-  } else {
-    // No predicted class - spread evenly
-    FAILURE_MODES.forEach(m => { modes[m] = p / FAILURE_MODES.length; });
+  const bias = {
+    vibration:    'bearing_fault',
+    temperature:  'winding_overheat',
+    pressure:     'cavitation',
+    flow:         'cavitation',
+    speed:        'misalignment',
+    current:      'belt_slip',
+  };
+  const weights = Object.fromEntries(FAILURE_MODES.map(m => [m, 0]));
+  for (const f of features) {
+    const key = (f.measurement || '').toLowerCase();
+    const target = bias[key] || 'bearing_fault';
+    const mag = Math.abs(Number(f.std_v) || 0) + Math.abs(Number(f.max_v) || 0);
+    weights[target] += 0.05 + mag;
   }
-  // Normalise so sum ~= 1 for display
-  const s = Object.values(modes).reduce((a, b) => a + b, 0);
-  if (s > 0) Object.keys(modes).forEach(k => { modes[k] = modes[k] / s; });
-  return modes;
+  const total = Object.values(weights).reduce((s, v) => s + v, 0) || 1;
+  // Scale by overall failure prob, add a small floor so we never display 0%
+  const floor = 0.04 + 0.04 * (1 - p);
+  const out = {};
+  for (const m of FAILURE_MODES) {
+    out[m] = weights[m] / total * (0.4 + 0.6 * p) + floor;
+  }
+  // Normalise to sum = 1
+  const s = Object.values(out).reduce((a, b) => a + b, 0);
+  Object.keys(out).forEach(k => { out[k] = out[k] / s; });
+  return out;
 }
 
 const predictFailure = asyncHandler(async (req, res) => {
@@ -171,7 +188,11 @@ const predictFailure = asyncHandler(async (req, res) => {
   const predicted_class = out.predicted_class
     || (failure_prob > 0.5 ? 'bearing_fault' : null);
   const confidence = Number(out.confidence) || Math.abs(failure_prob - 0.5) * 2;
-  const mode_probabilities = modeDistribution(failure_prob, predicted_class);
+  // Prefer the ML service's own breakdown (measurement-aware) — the
+  // fallback is only used if the model file is older than the schema upgrade.
+  const mode_probabilities = (out.mode_probabilities && Object.keys(out.mode_probabilities).length)
+    ? out.mode_probabilities
+    : fallbackModeDistribution(failure_prob, features);
 
   // Persist
   try {

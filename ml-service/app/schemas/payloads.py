@@ -47,6 +47,12 @@ class FailureResponse(BaseModel):
     failure_prob: float
     predicted_class: Optional[str] = None
     confidence: float
+    # Per-mode breakdown, sums to ~1. Computed in services/predictive_maintenance.py
+    # so the dominant mode reflects the actual sensor that's drifting (vibration
+    # → bearing, temperature → winding, …) instead of always being bearing_fault.
+    mode_probabilities: Optional[dict[str, float]] = None
+    # Diagnostic: raw XGBoost output before the calibration squash
+    raw_failure_prob: Optional[float] = None
 
 
 # ---- RUL --------------------------------------------------------------------

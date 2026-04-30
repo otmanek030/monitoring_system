@@ -618,11 +618,15 @@ a:hover { text-decoration: underline; }
   height: 100%;
 }
 
+/* Live Sensor Reading row: responsive grid that adapts to panel width.
+   Label gets the most space (with ellipsis), then a flexible track, then
+   a generous value cell big enough for "999.99 mm/s" without truncation. */
 .bg-row {
   display: grid;
-  grid-template-columns: 100px 1fr 50px;
+  grid-template-columns: minmax(70px, 1.2fr) minmax(48px, 2fr) minmax(78px, max-content);
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .bg-label {
@@ -632,15 +636,17 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .bg-track {
-  height: 12px;
+  height: 10px;
   background: var(--g-softer);
   border-radius: 3px;
   overflow: hidden;
   display: flex;
   border: 1px solid var(--border);
+  min-width: 40px;
 }
 
 .bg-fill {
@@ -660,6 +666,20 @@ a:hover { text-decoration: underline; }
   font-family: 'JetBrains Mono', monospace;
   text-align: right;
   color: var(--tx);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+/* Narrow panel guard: when the panel is < ~220 px wide, drop the track
+   so the row is just label + value (avoids horizontal overflow). */
+@media (max-width: 360px) {
+  .bg-row { grid-template-columns: 1fr auto; }
+  .bg-row .bg-track { display: none; }
 }
 
 .bg-val.green  { color: var(--g);      }
@@ -905,8 +925,49 @@ button.small { padding: 3px 9px; font-size: 11px; }
 /* ─── Grids ──────────────────────────────────────────────────── */
 .grid   { display: grid; gap: 12px; }
 .grid-4 { grid-template-columns: repeat(4, 1fr); }
-.grid-3 { grid-template-columns: repeat(3, 1fr); }
-.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ── Report-generator segmented control ── */
+.rg-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+@media (max-width: 720px) { .rg-seg { grid-template-columns: 1fr; } }
+
+.rg-seg-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: border-color .12s, background .12s, transform .04s;
+  min-width: 0;
+}
+.rg-seg-btn:hover:not(:disabled) {
+  border-color: var(--g);
+  background: var(--g-softer);
+}
+.rg-seg-btn.active {
+  border-color: var(--g);
+  background: var(--g-softer);
+  box-shadow: inset 0 0 0 1px var(--g);
+}
+.rg-seg-btn:disabled { cursor: not-allowed; }
+
+/* Dashboard row 1 — 4 cols → 2 cols → 1 col as the viewport shrinks. */
+@media (max-width: 1320px) {
+  .dashboard-row-1 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+}
+@media (max-width: 720px) {
+  .dashboard-row-1 { grid-template-columns: 1fr !important; }
+}
 .grid-1 { grid-template-columns: 1fr; }
 
 @media (max-width: 1200px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }

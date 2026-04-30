@@ -78,6 +78,16 @@ function init(httpServer) {
     io.to('dashboard').emit('alarm:cleared', a);
   });
   emitter.on('prediction', (p) => io.to('dashboard').emit('prediction', p));
+  // Auto-AI predictions (no manual trigger). Routed to both 'dashboard' and
+  // the per-equipment room so EquipmentDetail picks them up too.
+  emitter.on('prediction:anomaly', (p) => {
+    io.to('dashboard').emit('prediction:anomaly', p);
+    if (p.equipment_id) io.to(`equipment:${p.equipment_id}`).emit('prediction:anomaly', p);
+  });
+  emitter.on('prediction:failure', (p) => {
+    io.to('dashboard').emit('prediction:failure', p);
+    if (p.equipment_id) io.to(`equipment:${p.equipment_id}`).emit('prediction:failure', p);
+  });
   emitter.on('kpi', (k)        => io.to('dashboard').emit('kpi', k));
 
   return { io, emitter };

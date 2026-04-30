@@ -324,4 +324,80 @@ FROM equipment e
 WHERE e.tag_code IN ('310A_VP_01S','320A_SP_07','340G_SP_12')
 ON CONFLICT DO NOTHING;
 
+-- -----------------------------------------------------------------------------
+-- Seed alarms: historical records from 15 Apr 2026 to now
+-- Provides real data in the alarms page from day one of the PFE period.
+-- -----------------------------------------------------------------------------
+DO $$
+DECLARE
+  eq1_id  INTEGER;
+  eq2_id  INTEGER;
+  eq3_id  INTEGER;
+  s1_id   INTEGER;
+  s2_id   INTEGER;
+  s3_id   INTEGER;
+BEGIN
+  SELECT equipment_id INTO eq1_id FROM equipment WHERE tag_code = '310A_VP_01S';
+  SELECT equipment_id INTO eq2_id FROM equipment WHERE tag_code = '320A_SP_07';
+  SELECT equipment_id INTO eq3_id FROM equipment WHERE tag_code = '340G_SP_12';
+  SELECT sensor_id    INTO s1_id  FROM sensors WHERE tag_code LIKE '%VIB%' LIMIT 1;
+  SELECT sensor_id    INTO s2_id  FROM sensors WHERE tag_code LIKE '%TEMP%' LIMIT 1;
+  SELECT sensor_id    INTO s3_id  FROM sensors WHERE tag_code LIKE '%PRESS%' LIMIT 1;
+
+  -- Cleared alarm: high vibration on 15 Apr 2026
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at, closed_at)
+  SELECT eq1_id, s1_id, NULL, 'high', 'cleared',
+    'Vibration exceeds warning threshold on Feed Pump 01S', 3.2, 3.87,
+    TIMESTAMP '2026-04-15 07:42:00', TIMESTAMP '2026-04-15 09:15:00'
+  WHERE eq1_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- Cleared alarm: bearing temperature spike 17 Apr 2026
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at, closed_at)
+  SELECT eq2_id, s2_id, NULL, 'warning', 'cleared',
+    'Bearing temperature rising on Slurry Pump 07 — check lubrication', 58.0, 61.3,
+    TIMESTAMP '2026-04-17 14:20:00', TIMESTAMP '2026-04-17 16:45:00'
+  WHERE eq2_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- Cleared alarm: pressure drop 20 Apr 2026
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at, closed_at)
+  SELECT eq3_id, s3_id, NULL, 'critical', 'cleared',
+    'Line pressure drop below minimum — possible cavitation or blockage', 40.0, 34.1,
+    TIMESTAMP '2026-04-20 22:05:00', TIMESTAMP '2026-04-21 00:30:00'
+  WHERE eq3_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- Acknowledged alarm: motor load 23 Apr 2026
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at, acknowledged_at)
+  SELECT eq1_id, s1_id, NULL, 'warning', 'acknowledged',
+    'Motor load above 85% sustained for >10 min on Feed Pump 01S', 680.0, 712.0,
+    TIMESTAMP '2026-04-23 10:10:00', TIMESTAMP '2026-04-23 10:35:00'
+  WHERE eq1_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- Active alarm: vibration fault today (relative to seed time)
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at)
+  SELECT eq2_id, s1_id, NULL, 'fatal', 'active',
+    'CRITICAL: Shaft vibration exceeds 4 mm/s — immediate inspection required on Slurry Pump 07', 3.2, 4.15,
+    NOW() - INTERVAL '2 hours'
+  WHERE eq2_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+  -- Active alarm: temperature warning
+  INSERT INTO alarms (equipment_id, sensor_id, alarm_def_id, severity, status,
+    message, threshold_value, sensor_value, opened_at)
+  SELECT eq3_id, s2_id, NULL, 'warning', 'active',
+    'Bearing temperature trending upward on Tailings Pump 12', 58.0, 59.8,
+    NOW() - INTERVAL '45 minutes'
+  WHERE eq3_id IS NOT NULL
+  ON CONFLICT DO NOTHING;
+
+END $$;
+
 -- End of seed

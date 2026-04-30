@@ -11,6 +11,7 @@ router.get   ('/health',        ctrl.healthOverview);
 router.get   ('/',              ctrl.list);
 router.get   ('/:id',           ctrl.get);
 router.get   ('/:id/sensors',   ctrl.listSensors);
-router.patch ('/:id/status',    requirePerm('equipment', 'w'), ctrl.setStatus);
+router.patch ('/:id/status',      requirePerm('equipment', 'w'), ctrl.setStatus);
+router.patch ('/:id/responsible', requirePerm('equipment', 'w'), ctrl.setResponsible);
 
 module.exports = router;

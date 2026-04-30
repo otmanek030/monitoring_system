@@ -13,6 +13,7 @@
 
 const { query } = require('../config/db');
 const logger = require('../config/logger');
+const alarmNotifier = require('./alarmNotifier');
 
 // In-memory last-state per sensor to detect transitions without hitting DB.
 const lastState = new Map(); // sensor_id -> { state, alarmId }
@@ -78,6 +79,9 @@ async function evaluate(sensor, value, ts) {
       if (rows[0]) {
         events.push({ type: 'new', alarm: rows[0] });
         lastState.set(sensor.sensor_id, { state: now.state, alarmId: rows[0].alarm_id });
+        // Fire-and-forget critical-alarm notification (no await — we don't
+        // want to slow the data generator if the DM insert is slow).
+        alarmNotifier.notifyCriticalAlarm(rows[0]).catch(() => {});
         return events;
       }
     } catch (err) {

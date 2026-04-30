@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Equipment as EqApi, Predictions } from '../services/api';
+import TableSearch, { useTableSearch, NoResultsRow } from '../components/TableSearch';
 
 /* Status → badge class mapping */
 const statusClass = (s) => {
@@ -75,11 +76,9 @@ export default function EquipmentPage() {
       });
   }, []);
 
-  const visible = items.filter(i =>
-    !filter ||
-    (i.tag || '').toLowerCase().includes(filter.toLowerCase()) ||
-    (i.name || '').toLowerCase().includes(filter.toLowerCase())
-  );
+  const visible = useTableSearch(items, filter, [
+    'tag', 'name', 'area_code', 'area_name', 'type_name', 'status',
+  ]);
 
   /* Status summary counts */
   const counts = items.reduce((acc, i) => {
@@ -113,11 +112,12 @@ export default function EquipmentPage() {
             {healthBuckets.critical > 0 && <span style={{ color: 'var(--red)', marginLeft: 6 }}>{healthBuckets.critical} critical</span>}
           </div>
         </div>
-        <input
-          placeholder="Filter by tag or name…"
+        <TableSearch
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          style={{ width: 240 }}
+          onChange={setFilter}
+          total={items.length}
+          shown={visible.length}
+          placeholder="Search tag, name, area, type…"
         />
       </div>
 
@@ -202,11 +202,9 @@ export default function EquipmentPage() {
                 );
               })}
               {!visible.length && (
-                <tr>
-                  <td colSpan="8" style={{ textAlign: 'center', padding: 28, color: 'var(--tm)', fontSize: 13 }}>
-                    {loading ? '⏳ Loading equipment list…' : filter ? 'No equipment matches your filter.' : 'No equipment found.'}
-                  </td>
-                </tr>
+                loading
+                  ? <tr><td colSpan="8" style={{ textAlign: 'center', padding: 28, color: 'var(--tm)', fontSize: 13 }}>⏳ Loading equipment list…</td></tr>
+                  : <NoResultsRow colSpan={8} query={filter} message={!items.length ? 'No equipment found.' : undefined} />
               )}
             </tbody>
           </table>
