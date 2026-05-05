@@ -49,15 +49,23 @@ const GRID_COLOR = 'var(--border)';
 
 /* ── X-axis label formatter ─────────────────────────────────── */
 function makeXFormatter(data) {
-  if (!data?.length < 2) return () => '';
+  if (!data || data.length < 2) {
+    return (ts) => ts ? new Date(ts).toLocaleTimeString([], { hour12: false }) : '';
+  }
   const span = new Date(data[data.length - 1].ts) - new Date(data[0].ts);
   if (span <= 3_600_000)
     return (ts) => new Date(ts).toLocaleTimeString([], { hour12: false });
   if (span <= 24 * 3_600_000)
     return (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (span <= 7 * 24 * 3_600_000)
+    return (ts) => {
+      const d = new Date(ts);
+      return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}h`;
+    };
+  // > 7 days → only date
   return (ts) => {
     const d = new Date(ts);
-    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}h`;
+    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
   };
 }
 

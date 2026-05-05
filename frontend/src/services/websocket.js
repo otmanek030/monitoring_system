@@ -42,7 +42,10 @@ export function closeSocket() {
  * React hook: subscribe to the live feed.
  * @param {Object} opts
  * @param {number} [opts.equipmentId]   - also subscribe to equipment:<id> room
- * @param {number} [opts.bufferSize=300]- ring buffer size per sensor
+ * @param {number} [opts.bufferSize=300]- minimum live ring buffer size per sensor
+ *                                        (the real cap grows to fit the seeded
+ *                                         history so 7d/All ranges aren't
+ *                                         truncated when a live tick arrives)
  * @returns {{
  *   readings, latestAlarm, connected, seedHistorical,
  *   anomalyPredictions,   // { [sensor_id]: latest payload }
@@ -59,13 +62,29 @@ export function useLiveFeed({ equipmentId, bufferSize = 300 } = {}) {
   const [failurePredictions, setFailurePredictions] = useState({});
   const [latestAnomaly, setLatestAnomaly]           = useState(null);
   const [latestFailure, setLatestFailure]           = useState(null);
-  const bufRef = useRef({});
+  const bufRef    = useRef({});
+  /* Per-sensor effective cap. Starts at bufferSize and is bumped up when
+   * seedHistorical() loads a long history (e.g. 7d / All), so subsequent
+   * live readings don't trim that history away. Hard ceiling 60k just
+   * to avoid runaway memory if something pathological happens. */
+  const capRef    = useRef({});
+  const HARD_CEIL = 60_000;
 
   const seedHistorical = useCallback((historical) => {
-    const next = { ...historical };
+    const next = {};
+    const caps = {};
+    for (const [sid, pts] of Object.entries(historical || {})) {
+      next[sid] = pts || [];
+      // Effective cap = max(default bufferSize, seeded length + 5k headroom)
+      caps[sid] = Math.min(
+        HARD_CEIL,
+        Math.max(bufferSize, (pts?.length || 0) + 5_000)
+      );
+    }
     bufRef.current = next;
+    capRef.current = caps;
     setReadings({ ...next });
-  }, []);
+  }, [bufferSize]);
 
   useEffect(() => {
     const sock = getSocket();
@@ -74,8 +93,9 @@ export function useLiveFeed({ equipmentId, bufferSize = 300 } = {}) {
     const onDisconnect = () => setConnected(false);
     const onReading = (r) => {
       const buf = bufRef.current[r.sensor_id] || [];
+      const cap = capRef.current[r.sensor_id] || bufferSize;
       const next = [...buf, { ts: r.ts, value: r.value }];
-      if (next.length > bufferSize) next.splice(0, next.length - bufferSize);
+      if (next.length > cap) next.splice(0, next.length - cap);
       bufRef.current[r.sensor_id] = next;
       setReadings((prev) => ({ ...prev, [r.sensor_id]: next }));
     };

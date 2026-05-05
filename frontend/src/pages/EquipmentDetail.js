@@ -107,12 +107,15 @@ export default function EquipmentDetail() {
     setLoading(true);
     liveSeeded.current = false;     // reset live-seed guard on range change
 
-    const { from, bucket } = getRangeParams(selectedRange);
+    const { from, to, bucket } = getRangeParams(selectedRange);
+    // Per-range cap so 7d/All actually cover the entire period instead of
+    // being silently truncated to 5000 rows.
+    const limit = ({ live: 600, '1h': 1500, '6h': 1500, '24h': 1500, '7d': 8000, all: 30000 }[selectedRange]) || 5000;
 
     try {
       const results = await Promise.all(
         sensors.map(s =>
-          Sensors.readings(s.id, { from, bucket, limit: 5000 })
+          Sensors.readings(s.id, { from, to, bucket, limit })
             .then(res => ({
               id: s.id,
               // Normalise: raw → {ts, value}, aggregated → {ts, value, min, max}

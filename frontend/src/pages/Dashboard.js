@@ -23,6 +23,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Equipment, Alarms, Predictions, Sensors } from '../services/api';
 import { useLiveFeed } from '../services/websocket';
 import TimeRangePicker, { getRangeParams, filterPointsToRange } from '../components/Charts/TimeRangePicker';
+import DigitalTwin from '../components/Dashboard/DigitalTwin';
+import CascadeRiskPanel from '../components/Dashboard/CascadeRiskPanel';
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -347,6 +349,16 @@ export default function Dashboard() {
 
     (async () => {
       const params = getRangeParams(range);
+      // Per-range fetch caps. "All" and "7d" need much more headroom because
+      // the whole monitoring period (since 2026-04-15) is ~3 weeks of buckets.
+      const limitFor = (k) => ({
+        live: 600,
+        '1h': 1500,
+        '6h': 1500,
+        '24h': 1500,
+        '7d': 8000,
+        all: 30000,
+      }[k] || 1500);
       const seed = {};
       await Promise.all(featuredSensors.map(async (s) => {
         try {
@@ -354,7 +366,7 @@ export default function Dashboard() {
             from:   params.from,
             to:     params.to,
             bucket: params.live ? 'raw' : params.bucket,
-            limit:  range === 'all' ? 5000 : 1500,
+            limit:  limitFor(range),
           });
           seed[s.id] = (r.points || []).map(p => ({
             ts: new Date(p.ts || p.bucket).getTime(),
@@ -655,6 +667,34 @@ export default function Dashboard() {
           height={170}
           datasets={buildDatasets(panel1)}
         />
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════
+          ROW 1.5 — Digital Twin Plant Layout + Cascade Risk
+      ══════════════════════════════════════════════════════════ */}
+      <div style={{
+        fontSize: 10.5, fontWeight: 700, color: 'var(--tm)',
+        letterSpacing: '.6px', textTransform: 'uppercase',
+        borderLeft: '3px solid var(--g)', paddingLeft: 10,
+      }}>
+        Plant Floor Awareness — Digital Twin &amp; Cascading Risk
+      </div>
+
+      <div className="dashboard-twin-row" style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 2.2fr) minmax(320px, 1fr)',
+        gap: 12,
+        alignItems: 'stretch',
+        height: 540,        // FIXED height so the cascade panel can scroll
+      }}>
+        <DigitalTwin
+          equipment={health?.equipment || []}
+          liveReadings={liveReadings}
+          height={460}
+        />
+        {/* The cascade panel inherits the row height (540 px) and its inner
+            list scrolls when there are too many chains to show. */}
+        <CascadeRiskPanel />
       </div>
 
       {/* ══════════════════════════════════════════════════════════

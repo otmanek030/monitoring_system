@@ -20,6 +20,7 @@ import {
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import TableSearch, { useTableSearch } from '../components/TableSearch';
+import WorkOrderDrafts from '../components/Maintenance/WorkOrderDrafts';
 
 const STATUSES = [
   { value: 'open',        label: 'Open',        cls: 'info' },
@@ -144,6 +145,9 @@ export default function Maintenance() {
       </div>
 
       {error && <div className="error">{error}</div>}
+
+      {/* ── Auto-generated drafts (from ML predictions) ── */}
+      <WorkOrderDrafts onConverted={load} />
 
       <div className="panel">
         <div className="tbl-wrap" style={{ maxHeight: 600, overflowY: 'auto' }}>

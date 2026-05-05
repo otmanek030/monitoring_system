@@ -77,6 +77,21 @@ export const Predictions = {
   anomalyHistory: (sensor_id) => api.get(`/predictions/anomaly/${sensor_id}/history`).then(r => r.data),
   failureHistory: (equipment_id) => api.get(`/predictions/failure/${equipment_id}/history`).then(r => r.data),
   mlHealth: () => api.get('/predictions/health').then(r => r.data),
+  /** Cascading failure chains across the plant (top-N risky paths). */
+  cascade:  (params)            => api.get('/predictions/cascade', { params }).then(r => r.data),
+  /** Downstream chain starting from one specific asset. */
+  cascadeFor: (equipment_id)    => api.get(`/predictions/cascade/${equipment_id}`).then(r => r.data),
+};
+
+export const WorkOrders = {
+  list:     (params) => api.get('/work-orders', { params }).then(r => r.data),
+  get:      (id)     => api.get(`/work-orders/${id}`).then(r => r.data),
+  create:   (data)   => api.post('/work-orders', data).then(r => r.data),
+  approve:  (id, data = {}) => api.post(`/work-orders/${id}/approve`, data).then(r => r.data),
+  reject:   (id, reason)    => api.post(`/work-orders/${id}/reject`, { reason }).then(r => r.data),
+  /** Manually generate work order drafts from current predictive alerts. */
+  autoGenerate: () => api.post('/work-orders/auto-generate').then(r => r.data),
+  pendingCount: () => api.get('/work-orders/pending/count').then(r => r.data),
 };
 
 export const Maintenance = {

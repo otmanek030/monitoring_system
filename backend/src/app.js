@@ -22,6 +22,7 @@ const dataRoutes        = require('./routes/data');
 const alarmRoutes       = require('./routes/alarms');
 const predictionRoutes  = require('./routes/anomalies');
 const maintenanceRoutes = require('./routes/maintenance');
+const workOrdersRoutes  = require('./routes/workOrders');
 const reportRoutes      = require('./routes/reports');
 const userRoutes        = require('./routes/users');
 const notesRoutes       = require('./routes/notes');
@@ -63,6 +64,7 @@ function buildApp() {
   app.use('/api/alarms',       alarmRoutes);
   app.use('/api/predictions',  predictionRoutes);
   app.use('/api/maintenance',  maintenanceRoutes);
+  app.use('/api/work-orders',  workOrdersRoutes);
   app.use('/api/reports',      reportRoutes);
   app.use('/api/users',        userRoutes);
   app.use('/api/notes',        notesRoutes);
