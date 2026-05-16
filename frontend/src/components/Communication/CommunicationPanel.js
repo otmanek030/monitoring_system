@@ -13,7 +13,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Users as UsersApi, Messages as MsgApi } from '../../services/api';
+import { Users as UsersApi, Messages as MsgApi, Alarms } from '../../services/api';
 
 const ROLE_COLORS = {
   admin:      { bg: '#102818', text: '#8fc96f' },
@@ -34,9 +34,27 @@ export default function CommunicationPanel() {
   const [contacts,  setContacts]  = useState([]);
   const [unread,    setUnread]    = useState(0);
   const [activeTab, setActiveTab] = useState('chat');      // 'chat' | 'inbox'
-  const [busy,      setBusy]      = useState(false);
-  const [err,       setErr]       = useState('');
+  const [busy,         setBusy]         = useState(false);
+  const [err,          setErr]          = useState('');
+  const [hasFatalAlarm, setHasFatalAlarm] = useState(false); // true when any active fatal alarm exists
   const bottomRef = useRef(null);
+
+  /* ── Poll for active fatal/critical alarms every 8 s ── */
+  useEffect(() => {
+    if (!user) return;
+    const checkFatal = async () => {
+      try {
+        const data = await Alarms.list({ severity: 'fatal', status: 'active', limit: 1 });
+        const items = data?.items || data || [];
+        setHasFatalAlarm(items.length > 0);
+      } catch {
+        /* silent — don't spam the user on transient network errors */
+      }
+    };
+    checkFatal();
+    const t = setInterval(checkFatal, 8000);
+    return () => clearInterval(t);
+  }, [user]);
 
   /* ── Load contact directory (every active user, any role) ── */
   useEffect(() => {
@@ -118,18 +136,19 @@ export default function CommunicationPanel() {
 
   return (
     <>
-      {/* Floating toggle */}
+      {/* Floating toggle — turns red and vibrates when a fatal alarm is active */}
       <button
         onClick={() => setOpen(v => !v)}
+        className={hasFatalAlarm ? 'comm-btn-fatal' : ''}
         style={{
           position: 'fixed', bottom: 20, right: 20, zIndex: 9000,
           width: 48, height: 48, borderRadius: '50%',
           background: 'var(--g)', border: 'none', cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           boxShadow: '0 4px 16px rgba(0,122,61,.35)',
-          transition: 'transform .15s',
+          transition: 'background .3s',
         }}
-        title="Communication"
+        title={hasFatalAlarm ? '⚠️ FATAL ALARM — Open Communication' : 'Communication'}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"
           style={{ width: 22, height: 22 }}>

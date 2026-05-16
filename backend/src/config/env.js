@@ -52,6 +52,20 @@ const env = {
   },
 
   logLevel: process.env.LOG_LEVEL || 'info',
+
+  // ── Email / SMTP ─────────────────────────────────────────────────────────
+  // Set SMTP_ENABLED=true and fill the remaining vars to activate email alerts.
+  // Gmail example: host=smtp.gmail.com, port=587, user=you@gmail.com,
+  //   pass=<16-char App Password from Google Account → Security → App passwords>
+  email: {
+    enabled:  bool(process.env.SMTP_ENABLED, false),
+    host:     process.env.SMTP_HOST     || 'smtp.gmail.com',
+    port:     num(process.env.SMTP_PORT,  587),
+    secure:   bool(process.env.SMTP_SECURE, false),  // true for port 465
+    user:     process.env.SMTP_USER     || '',
+    pass:     process.env.SMTP_PASS     || '',
+    from:     process.env.SMTP_FROM     || process.env.SMTP_USER || 'noreply@phoswatch.local',
+  },
 };
 
 module.exports = env;

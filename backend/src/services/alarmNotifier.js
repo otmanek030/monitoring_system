@@ -1,33 +1,40 @@
 /**
  * alarmNotifier.js
  *
- * Sends a direct message to the equipment's responsible user (and to any
- * supervisor / admin as a fallback) whenever a critical alarm fires.
+ * Fires two kinds of notification whenever a critical alarm is raised:
  *
- * The message goes into `direct_messages` with kind='alert' so it shows
- * up in the Communication panel's Inbox with red highlighting and an
- * emergency icon. Recipients see it the next time they open the panel
- * (4 s polling) or instantly if they're already viewing the thread.
+ *  1. In-app DM  – inserted into `direct_messages` (kind='alert').
+ *     Goes to the equipment's responsible user, or falls back to all
+ *     active supervisors + admins if none is set.
  *
- * Severity gate: only `fatal` and `urgent` alarms trigger a notification
- * (warnings are too noisy to DM about). Configurable via
- * ALARM_NOTIFY_SEVERITIES env var (comma-separated).
+ *  2. Email alert – sent via SMTP (nodemailer) to:
+ *       • The responsible user's registered email address (if set)
+ *       • Every active operator and technician (since fatal alarms
+ *         concern the whole floor team and there can be more than one)
+ *     Only real external addresses (containing '@') are used; .local
+ *     addresses are silently skipped when SMTP points to an external relay.
+ *     Email is only sent when SMTP_ENABLED=true (see emailService.js).
+ *
+ * Severity gate: only `fatal`, `urgent`, and `critical` alarms trigger
+ * notifications. Configurable via ALARM_NOTIFY_SEVERITIES env var.
+ *
+ * Dedup: same equipment + same severity fires at most once every 5 minutes
+ * to avoid flooding inboxes during sustained alarm conditions.
  */
 'use strict';
 
-const { query } = require('../config/db');
-const logger = require('../config/logger');
+const { query }          = require('../config/db');
+const logger             = require('../config/logger');
+const { sendAlarmEmail } = require('./emailService');
 
 const NOTIFY_SEVS = (process.env.ALARM_NOTIFY_SEVERITIES || 'fatal,urgent,critical')
   .split(',').map(s => s.trim()).filter(Boolean);
 
-// Avoid spamming: same equipment + same severity within 5 minutes is one alert.
-const recentAlerts = new Map();   // key=`eqId:severity` → timestamp ms
-const DEDUP_MS = 5 * 60 * 1000;
+// Dedup map: key = `eqId:severity` → last-fired timestamp (ms)
+const recentAlerts = new Map();
+const DEDUP_MS = 5 * 60 * 1000;   // 5 minutes
 
-/* The id of the system "alarm-bot" sender. We piggy-back on user_id=1
-   (admin) so the message has a valid foreign key. The body makes it clear
-   the message is automated. */
+/* The id of the system "alarm-bot" sender for in-app DMs. */
 async function _systemSenderId() {
   const { rows } = await query(
     `SELECT user_id FROM users WHERE username = 'admin' OR user_id = 1
@@ -36,9 +43,7 @@ async function _systemSenderId() {
 }
 
 /**
- * Post a critical-alarm DM to the equipment's responsible user. If no
- * responsible user is set, fall back to all supervisors + admins so the
- * alert isn't lost.
+ * Notify all relevant users (in-app DM + email) when a critical alarm fires.
  */
 async function notifyCriticalAlarm(alarm) {
   try {
@@ -46,13 +51,13 @@ async function notifyCriticalAlarm(alarm) {
     if (!NOTIFY_SEVS.includes(sev)) return;
     if (!alarm.equipment_id) return;
 
-    // Dedup
-    const key = `${alarm.equipment_id}:${sev}`;
+    // ── Dedup ──────────────────────────────────────────────────────────────
+    const key  = `${alarm.equipment_id}:${sev}`;
     const last = recentAlerts.get(key) || 0;
     if (Date.now() - last < DEDUP_MS) return;
     recentAlerts.set(key, Date.now());
 
-    // Pull equipment + responsible user + sensor info
+    // ── Equipment + sensor info ────────────────────────────────────────────
     const { rows: eqRows } = await query(
       `SELECT e.equipment_id, e.tag_code, e.name, e.responsible_user_id,
               s.tag_code AS sensor_tag, s.name AS sensor_name, s.unit AS sensor_unit
@@ -65,26 +70,43 @@ async function notifyCriticalAlarm(alarm) {
     const eq = eqRows[0];
     if (!eq) return;
 
-    // Pick recipients
-    let recipients = [];
+    // ── In-app DM recipients ───────────────────────────────────────────────
+    // Primary: responsible user. Fallback: all active supervisors + admins.
+    let dmRecipientIds = [];
     if (eq.responsible_user_id) {
-      recipients = [eq.responsible_user_id];
+      dmRecipientIds = [eq.responsible_user_id];
     } else {
-      // Fallback: every active supervisor + admin
       const { rows } = await query(
         `SELECT u.user_id FROM users u
          JOIN roles r ON r.role_id = u.role_id
          WHERE u.is_active = TRUE AND r.code IN ('admin','supervisor')`);
-      recipients = rows.map(r => r.user_id);
+      dmRecipientIds = rows.map(r => r.user_id);
     }
-    if (!recipients.length) return;
 
-    const sender = await _systemSenderId();
-    const triggerVal = alarm.trigger_value != null
-      ? Number(alarm.trigger_value).toFixed(3)
-      : '?';
+    // ── Email recipients ───────────────────────────────────────────────────
+    // Responsible user's email + every active operator and technician.
+    // Using a UNION to get the full, deduplicated set of addresses.
+    const { rows: emailRows } = await query(
+      `SELECT DISTINCT u.email
+       FROM users u
+       JOIN roles r ON r.role_id = u.role_id
+       WHERE u.is_active = TRUE
+         AND (
+           u.user_id = $1
+           OR r.code IN ('operator', 'technician')
+         )`,
+      [eq.responsible_user_id || 0]
+    );
+    const emailAddresses = emailRows.map(r => r.email).filter(Boolean);
 
-    const body =
+    // ── Send in-app DMs ────────────────────────────────────────────────────
+    if (dmRecipientIds.length) {
+      const sender    = await _systemSenderId();
+      const triggerVal = alarm.trigger_value != null
+        ? Number(alarm.trigger_value).toFixed(3)
+        : '?';
+
+      const body =
 `Critical alarm on ${eq.tag_code} — ${eq.name}
 Severity: ${sev.toUpperCase()}
 Sensor:   ${eq.sensor_tag || '—'} ${eq.sensor_name ? `(${eq.sensor_name})` : ''}
@@ -92,25 +114,32 @@ Reading:  ${triggerVal} ${eq.sensor_unit || ''}
 Message:  ${alarm.message || '—'}
 Action:   Immediate inspection required. View in Alarms page.`;
 
-    // Don't message the sender themselves
-    const targets = recipients.filter(uid => uid !== sender);
-    if (!targets.length) return;
+      const targets = dmRecipientIds.filter(uid => uid !== sender);
+      if (targets.length) {
+        const values = [];
+        const placeholders = targets.map((uid, i) => {
+          const k = i * 5;
+          values.push(sender, uid, body, 'alert', alarm.alarm_id || null);
+          return `($${k+1}, $${k+2}, $${k+3}, $${k+4}, $${k+5})`;
+        });
+        await query(
+          `INSERT INTO direct_messages
+             (from_user_id, to_user_id, body, kind, ref_alarm_id)
+           VALUES ${placeholders.join(',')}`,
+          values
+        );
+        logger.info('critical alarm DM sent', {
+          equipment: eq.tag_code, severity: sev, recipients: targets.length,
+        });
+      }
+    }
 
-    const values = [];
-    const placeholders = targets.map((uid, i) => {
-      const k = i * 5;
-      values.push(sender, uid, body, 'alert', alarm.alarm_id || null);
-      return `($${k+1}, $${k+2}, $${k+3}, $${k+4}, $${k+5})`;
-    });
-    await query(
-      `INSERT INTO direct_messages
-         (from_user_id, to_user_id, body, kind, ref_alarm_id)
-       VALUES ${placeholders.join(',')}`,
-      values
+    // ── Send email alerts ──────────────────────────────────────────────────
+    // Fire-and-forget — email failure must never crash the alarm pipeline.
+    sendAlarmEmail(alarm, eq, emailAddresses).catch(err =>
+      logger.warn('alarm email fire-and-forget failed', { err: err.message })
     );
-    logger.info('critical alarm notification sent', {
-      equipment: eq.tag_code, severity: sev, recipients: targets.length,
-    });
+
   } catch (err) {
     logger.warn('alarm notifier failed', { err: err.message });
   }

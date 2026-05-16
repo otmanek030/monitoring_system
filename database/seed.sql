@@ -256,15 +256,15 @@ ON CONFLICT (sensor_id, code) DO NOTHING;
 -- -----------------------------------------------------------------------------
 INSERT INTO roles (code, name, description, permissions) VALUES
   ('admin',      'Administrator', 'Full access',
-    '{"equipment":"*","alarms":"*","users":"*","reports":"*","predictions":"*","maintenance":"*"}'),
+    '{"*":"*"}'),
   ('supervisor', 'Supervisor',    'Plant supervisor',
-    '{"equipment":"r","alarms":"rw","users":"r","reports":"rw","predictions":"r","maintenance":"rw"}'),
+    '{"dashboard":"r","equipment":"rw","sensors":"rw","thresholds":"w","alarms":"rw","maintenance":"rw","assign_maintenance":"w","predictions":"rw","reports":"rw","notes":"rw","my_shift":"rw","users":"r"}'),
   ('technician', 'Technician',    'Maintenance technician',
-    '{"equipment":"r","alarms":"rw","reports":"r","predictions":"r","maintenance":"rw"}'),
+    '{"dashboard":"r","equipment":"rw","sensors":"r","alarms":"rw","maintenance":"rw","predictions":"rw","reports":"r","notes":"rw","my_shift":"rw"}'),
   ('operator',   'Operator',      'Control room operator',
-    '{"equipment":"r","alarms":"rw","reports":"r","predictions":"r","maintenance":"r"}'),
+    '{"dashboard":"r","equipment":"r","sensors":"r","alarms":"rw","maintenance":"r","notes":"rw","reports":"r","my_shift":"rw"}'),
   ('viewer',     'Viewer',        'Read-only viewer',
-    '{"equipment":"r","alarms":"r","reports":"r","predictions":"r","maintenance":"r"}')
+    '{"dashboard":"r","equipment":"r","alarms":"r","reports":"r","notes":"r"}')
 ON CONFLICT (code) DO NOTHING;
 
 -- Default users.  Password for ALL seed users is: phoswatch123

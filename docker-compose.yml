@@ -16,6 +16,17 @@ services:
       - ML_SERVICE_URL=http://ml-service:8000
       - JWT_SECRET=phoswatch_super_secret_key_2026
       - CORS_ORIGIN=http://localhost
+      # ── Email alert settings ──────────────────────────────────────────────
+      # Set SMTP_ENABLED=true and fill credentials to activate email alerts.
+      # Gmail: generate a 16-char App Password at
+      #   Google Account → Security → 2-Step Verification → App passwords
+      - SMTP_ENABLED=false
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_USER=hhh528288gmail@gmail.com
+      - SMTP_PASS=0605
+      - SMTP_FROM=PhosWatch Alerts <hhh528288gmail@gmail.com>
     depends_on:
       - database
       - ml-service

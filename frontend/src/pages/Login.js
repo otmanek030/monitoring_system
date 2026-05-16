@@ -6,8 +6,8 @@ export default function Login() {
   const { user, login } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('phoswatch123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy]   = useState(false);
 
@@ -97,9 +97,7 @@ export default function Login() {
 
         {error && <div className="error" style={{ marginTop: 0 }}>⚠ {error}</div>}
 
-        <div style={{ fontSize: 10.5, color: 'var(--td)', borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 4 }}>
-          Default credentials: <code>admin</code> / <code>phoswatch123</code>
-        </div>
+        
       </form>
     </div>
   );

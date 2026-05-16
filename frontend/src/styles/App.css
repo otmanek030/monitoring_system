@@ -871,6 +871,41 @@ table.table tr:last-child td, .tbl tbody tr:last-child td {
   50%       { box-shadow: 0 0 0 5px rgba(0,122,61,0); }
 }
 
+/* ── Communication button — fatal alarm state ─────────────────── */
+
+/* Ring expands outward from the button and fades — "sonar ping" */
+@keyframes sonar-ring {
+  0%   { transform: scale(1);   opacity: 0.6; }
+  100% { transform: scale(2.6); opacity: 0;   }
+}
+
+/* Button's shadow breathes softly so it never feels static */
+@keyframes comm-breathe {
+  0%, 100% { box-shadow: 0 4px 16px rgba(214,69,69,.45); }
+  50%       { box-shadow: 0 6px 28px rgba(214,69,69,.80); }
+}
+
+.comm-btn-fatal {
+  background: #d64545 !important;
+  animation: comm-breathe 2s ease-in-out infinite !important;
+}
+
+/* Two staggered sonar rings using pseudo-elements */
+.comm-btn-fatal::before,
+.comm-btn-fatal::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(214, 69, 69, 0.45);
+  animation: sonar-ring 2.2s ease-out infinite;
+  pointer-events: none;
+}
+
+.comm-btn-fatal::after {
+  animation-delay: 1.1s; /* second ring, offset by half the cycle */
+}
+
 /* ─── Form controls ─────────────────────────────────────────── */
 input, select, button, textarea {
   font: inherit;
